@@ -8,6 +8,68 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 
 ---
 
+## 0. BUILD STATUS (updated 2026-07-09 — Day 2)
+
+**Timeline: 12–13 days dev→production** (compressed from 30; owner added 2–3 days for learning depth). Build order 0→1→2→3; Phase 4 is a post-launch fast-follow; pilot shrunk to 2–3 days. Owner is being mentored senior→junior on Node (Python background) — explain each step; on production issues always name the responsible file.
+
+### Phase 0 — Foundation: ~90% ✅ (Vercel deploy still pending; not blocking Phase 1)
+**Done:**
+- Next.js 16.2 scaffold (TypeScript, Tailwind 4, App Router), builds clean; deps installed (`@anthropic-ai/sdk`, `ai`, `@supabase/supabase-js`, `@supabase/ssr`, `zod`, `tsx`)
+- Supabase project LIVE (Mumbai, ref `qjofktcnkqixxnipxtke`); migrations 001+002 run — 7 tables, RLS enabled on all, verified by query
+- `lib/supabase/` three clients (client/server/admin) · `proxy.ts` auth gate · `vercel.json` crons · `.env.example` · `.env.local` populated with Supabase keys
+- Login/signup page (full name + email + password), signout route, auth-proof home page
+- **Auth loop VERIFIED end-to-end**: signup → trigger auto-created users row → signout → sign-in → home page shows role via RLS. Cascade delete verified too.
+- Test user exists: `ai.support@ecoste.in` (confirmed via email link)
+
+**Remaining for Phase 0:**
+1. Owner: flip OFF Authentication → Sign In / Providers → Email → "Confirm email" toggle (he was on the Emails *templates* page by mistake; workaround used for test user)
+2. Deploy to Vercel: push repo to GitHub → connect Vercel → paste env vars → live HTTPS URL (needed for the Zoho webhook, not blocking the rest of Phase 1)
+3. Optionally promote owner's user to `admin` role (one UPDATE) for see-all testing
+4. Uncommitted since Day 1 — owner chose to keep building before the first commit; still only one commit (`Initial commit from Create Next App`) in the repo as of Day 2
+
+### Phase 1 — Zoho sync: field mapping done, sync code next (Day 2, 2026-07-09)
+**The Day-4 screen-share call never happened** — instead, field mapping was done directly against live Zoho data (Settings API field metadata + real COQL queries + owner's domain knowledge), which turned out faster and more precise than a manual call would have been. Full detail in §4.3.
+
+**Done:**
+- Zoho OAuth working end-to-end: data center corrected (org is `.com`, not `.in` as originally guessed), scope corrected to read-only + `coql.READ` + `settings.fields.READ` + `users.READ`, refresh token regenerated and verified live
+- `lib/zoho.ts`: `getAccessToken()` (cached, refreshes only near expiry), `coqlQuery()` (handles Zoho's 204-empty-body quirk on zero-result queries), `ACCOUNT_FIELDS`, `DEAL_FIELDS`, `ACTIVE_DEAL_STAGES`, `buildActiveDealsQuery()`, `buildAccountsByIdsQuery()`, `getZohoUsers()` — all tested against real data
+- **The real sync scope filter, discovered empirically** (not what §4.3 originally assumed): `Account_Type` and `Status` on Accounts turned out not to be COQL-queryable at all. The actual filter is **Deals.Stage** — confirmed against the owner's live Custom View screenshot: `4 Phase`, `Mockup`, `MockUp Approval`, `Value Period Till Stage Arrival`, `Order Confirmed`. A deal becomes a tracked prospect at `4 Phase` and exits scope at `Order Punched` (won — deliberately excluded, nothing left to prepare for). Sync is therefore Deals-first: fetch active-stage deals, resolve their `Account_Name.id` lookups, fetch those accounts — matching the account-centric join design in §4.3, just with Deals as the entry point instead of Accounts.
+- Field mapping confirmed against live data: `Account_Unique_Number`, `City_Name` (messy picklist, ~200 values, some duplicates like "Bangalore"/"Bengaluru"), `Location` → `ho_location`, `Account_Working_Status`, `Belongs_To` → vertical (confirmed: **Accounts** module, not the similarly-named `Vertical` field on Deals). Deals: `Deal_Name`, `Contact_Name`, `Mobile_No` (not `Mobile` — confirmed unused), `Cities` (multiselect — project city, distinct from account's head-office city), `Expected_Value` → amount (the only populated one of 5 currency-field candidates)
+- Notes module confirmed as the only interactions source (owner confirmed no separate Calls/Meetings usage) — attaches to either Accounts or Deals via `Parent_Id.module.api_name`; `Note_Content` is raw HTML, needs stripping in `format.ts`
+- **Salesperson matching upgraded from plan** [decided 2026-07-09]: `Owner` on Accounts/Deals resolves to a real Zoho user via the Users API (`getZohoUsers()`) with a clean `full_name`, but inconsistent/shared emails (e.g. `sales@ecoste.in`) — so matching is by **Zoho user ID**, not free-text name. Signup will show a dropdown of real Zoho users; salesperson picks their name; ID stored in `users.zoho_user_id`. Supersedes the original "match by NAME" decision in §4.3.
+- Migration `003_zoho_mapping.sql` written and **applied** (owner ran it in the Supabase SQL Editor 2026-07-09) — verified: `deals` table, all new `accounts`/`users` columns present and queryable.
+- `upsertAccount()`, `upsertDeal()`, `syncActiveDealsPage()` written in `lib/zoho.ts` — resolves `Owner.id` against `users.zoho_user_id`, upserts on `crm_record_id` conflict. Tested against a live 5-record batch before the full run.
+- **`scripts/bulk-import.ts` written and run successfully** (`npm run bulk-import`): resumable via `sync_state` (module `bulk_import`), pages of 200. **Final result: 908 accounts, 1,327 deals synced.** 6 deals skipped (orphaned references to accounts that no longer exist in Zoho — confirmed via direct lookup, HTTP 204 — a real CRM data-quality artifact, not a sync bug; handled gracefully, not a crash).
+- Two real Zoho API quirks discovered and fixed along the way: (1) COQL returns HTTP 204 with an empty body on zero-result queries, not an empty JSON array — `coqlQuery()` handles this; (2) `where id in (...)` caps at 100 values — a 200-deal page can reference up to 200 distinct accounts, so account lookups are now chunked into batches of 100.
+- **`accounts.industry` added** [2026-07-09, after bulk import]: sourced from Zoho's `Nature_of_Account` (e.g. "Real Estate Developer", "Group Housing Builder", "Govt. Contractor") — NOT `Belongs_To`/vertical, which is Ecoste's own sales-channel classification, not the client's business type. Added specifically because the agent's query-enrichment technique (§6.4: `"{name}" {city} {industry} {year}`) needs it. Backfilled across all synced accounts via a second bulk-import run (idempotent) — **891/908 accounts (98%) now have industry populated.**
+- **Notes sync built and run** (`npm run sync-notes`, `scripts/sync-notes.ts` + `syncAllNotes()` in `lib/zoho.ts`): confirmed COQL supports `where Parent_Id in (...)` directly, so notes are pulled precisely for our 908 accounts + 1,327 deals (not the whole CRM's note history) in batches of 100 parent IDs. Deal-parented notes resolve to their account via the deals table. **Result: 11,438 notes synced into `interactions`, covering 801/908 accounts (88%).** `cleanNoteContent()` strips both raw HTML and Zoho's internal `crm[user#...]crm` @mention markup. Performance note: per-note Supabase upserts were far too slow (2 batches took ~5 min); switched to bulk upserts in chunks of 500 — full sync then took ~2 min.
+
+- **`app/api/zoho/webhook/route.ts` written and TESTED LIVE** [2026-07-09, confirmed working 2026-07-10]: POST endpoint, secret via `?secret=` query param (constant-time comparison via `timingSafeEqual`), accepts `{module, id}` from JSON body or query params, calls `syncOneAccount()`/`syncOneDeal()` in `lib/zoho.ts`. Scope-admission policy: an already-synced record is always updated (even if a deal moved to a non-active stage — keeps history rather than going stale); a record not yet in our tables is only admitted if a deal's current stage qualifies (mirrors bulk import's policy). Verified against a live local dev server with three cases: valid secret + known deal → `{"ok":true,"status":"synced"}`; bad secret → `401 {"error":"unauthorized"}`; well-formed but nonexistent deal ID → `{"ok":true,"status":"skipped","reason":"deal not found in Zoho (deleted?)"}`. All three passed as designed.
+
+- **Nightly cron route built and TESTED LIVE** [2026-07-10]: `app/api/zoho/nightly/route.ts`, GET endpoint, authenticated via `Authorization: Bearer <CRON_SECRET>` (Vercel sends this automatically on scheduled cron requests — same constant-time-comparison pattern as the webhook). Two new paginated functions in `lib/zoho.ts`: `syncModifiedDealsPage()` (Deals where `Modified_Time >` watermark, same scope-admission policy as the webhook — existing always updates, new only if stage qualifies) and `syncModifiedAccountsPage()` (Accounts where `Modified_Time >` watermark, only refreshes accounts already in scope — heals Account-only edits that never touch a Deal, which the Deals pass alone would miss). Watermark stored in `sync_state` (module `nightly`, `last_success_at` — only advances on success, so a failed run retries the same gap next time rather than silently skipping it). First-run fallback: 2-day lookback (bulk import already covers full history; this only needs to cover the gap since). Verified live: first run since a 2-day-ago cutoff synced 11 deals + 16 accounts (13 deals/13 accounts correctly skipped as out of scope); immediate re-run against the new watermark found 0 changes — confirmed idempotent.
+- **Zoho COQL datetime-literal gotcha found and fixed** [2026-07-10]: Zoho's COQL rejects fractional seconds in datetime literals (`'2026-07-08T18:30:00.000Z'` → `INVALID_QUERY`; `'2026-07-08T18:30:00Z'` works). Both JS's `.toISOString()` and Postgres's `timestamptz` text form emit fractional seconds — every datetime literal now goes through `coqlDatetimeLiteral()` in `lib/zoho.ts`, which strips them before building the query.
+- **Signup dropdown for `zoho_user_id` built and TESTED LIVE end-to-end** [2026-07-10]: `app/api/zoho/users/route.ts` (unauthenticated GET, wraps `getZohoUsers()` — fine since it only exposes internal staff names/emails, and is called pre-auth from the signup form). `app/login/page.tsx`'s free-text "Full name" field replaced with a `<select>` populated from that route; selecting a name sends both `full_name` and `zoho_user_id` as signup metadata. Migration `004_zoho_user_id_signup.sql` (owner applied it 2026-07-10) updates `handle_new_user()` to also persist `zoho_user_id` from `raw_user_meta_data`. Verified live: `GET /api/zoho/users` returns all 12 real Zoho users; a scripted signup test (`supabase.auth.signUp` with `zoho_user_id` metadata, then a service-role read of the `users` row, then cleanup) confirmed the row lands with the correct `full_name` AND `zoho_user_id` — the trigger works exactly as designed.
+- **Weekly reconciliation route built and TESTED LIVE** [2026-07-11]: `app/api/zoho/reconcile/route.ts` (GET, same `Authorization: Bearer <CRON_SECRET>` auth as nightly) + `reconcileDeletedAccounts()` in `lib/zoho.ts`. Neither the webhook nor nightly cron ever see a DELETE (no workflow rule fires, and a deleted record has no `Modified_Time` left to find) — this instead walks Zoho's dedicated deleted-records log (`GET /crm/v8/Accounts/deleted?type=all`, verified live: `info.more_records` drives pagination, up to 200/page; recycle-bin entries retained 60 days, permanent-delete entries 120 days — both comfortably longer than the weekly cadence) and soft-archives (`accounts.archived_at`) any matching row still marked live, never hard-deletes. Scoped to Accounts only per §4.2 [LOCKED] — Deals deletions aren't tracked. `sync_state` module `reconcile`. Verified live: real run found 233 deleted-record log entries, correctly archived 0 (spot-checked two deleted IDs directly — neither exists in our 908-account scope, as expected since sync scope is deal-driven); separately confirmed the archive-write query itself works by running it directly against one real account row and reverting.
+
+**Blocked / open:**
+- **`Region`/`Zone` fields are blocked at the API level** — neither COQL nor the plain REST API can read them (confirmed 2026-07-09), almost certainly Zoho field-level security. Owner chose to fix the permission (Setup → Security Control → Field Level Security → Accounts → grant View on Region/Zone to the Self Client's profile) rather than defer. `accounts.region` stays unpopulated by sync until fixed — will need a re-sync pass once fixed.
+- `accounts.lifecycle_stage` (from 001) has no clean Zoho source — `Account_Type` isn't COQL-queryable. Left unpopulated; the real "is this active" signal lives on `Deals.Stage` instead, which is what filters sync scope in the first place.
+- Still need: point an actual Zoho workflow rule at the webhook now that it's tested, and deploy to Vercel (live HTTPS URL for that rule + activates `vercel.json`'s cron schedule for both nightly and reconcile). This is now the ONLY remaining Phase 1 item.
+- **Gotcha for future scripts**: Supabase's JS client caps unpaginated `.select()` at 1000 rows silently — no error, just a truncated result. Bit us once already during verification (falsely looked like only 102 accounts had notes; real number was 801). Always `.range()`-paginate when counting/aggregating over any table that might exceed 1000 rows.
+
+### Owner's pending homework
+- ✅ Supabase project + migrations 001+002+003 — DONE
+- ✅ Bulk import — DONE (908 accounts, 1,327 deals, 11,438 interactions)
+- ⬜ Anthropic API key with billing (needed Day 3–4 / Phase 3)
+- ⬜ Fix Zoho field-level security on `Region`/`Zone` (Accounts module) — blocks `accounts.region` / team-leader RLS scoping
+
+### Key decisions made 2026-07-08 (details in §4.3, §5.3, §6.2)
+No FastAPI (TS-only) · model `claude-sonnet-5` + adaptive thinking + `web_search_20260209` · auth = Supabase email+password (no Google OAuth) · **no admin UI** (Supabase dashboard is the admin panel) · reports = spec never source · per-module COQL sync, join at home · `deals` child table (see Phase 1 status above for what actually landed in 003)
+
+### Next session: Vercel deploy (activates the cron schedule + gives the webhook a live URL for a real Zoho workflow rule) — the last Phase 1 item, then Phase 2 (client search UI) starts
+
+---
+
 ## 1. What this project is (in one paragraph)
 
 A mobile-friendly web app that makes every Ecoste salesperson walk into every client meeting fully prepared in under 2 minutes. The salesperson searches a client; the app instantly shows everything already known from Zoho CRM (kept in sync automatically); on one tap, an AI agent researches the client live on the web and returns four bullet-point sections — LinkedIn-type people news, RERA, Website, Google News — followed by a combined analysis explaining how to approach the meeting. Follow-up questions are answered database-first. Findings are saved on consent; on the next visit the app shows the old picture instantly and the agent explains what has changed since.
@@ -75,6 +137,17 @@ Both call the same `upsertRecord()` function using `INSERT ... ON CONFLICT (crm_
 
 Only fields listed in `ACCOUNT_FIELDS` are fetched (`?fields=` parameter). Everything else is ignored.
 
+**Multi-module reality [decided 2026-07-08]:** needed parameters live across several Zoho modules (Accounts, Deals/Opportunities, Contacts, Notes), linked by lookup fields that carry the parent Account's permanent ID. Strategy:
+- **Account-centric join**: every child record resolves its parent via `Zoho lookup id → accounts.crm_record_id → accounts.id`, inside `upsertRecord()` in `lib/zoho.ts`.
+- **Sorting rule** per parameter: one-per-client → flatten into an `accounts` column (or ride in `raw`); the-current-one (active deal) → flatten the 2–3 displayed fields; many-per-client AND listed in UI → child table following the `interactions` pattern (own `crm_record_id UNIQUE`, `account_id` FK, own webhook rule, own `MODULE_FIELDS` map).
+- **Default greedy-flat**: create child tables only when forced — each one costs sync code, webhook rules, and RLS policies.
+- The Day-4 mapping call outputs a sheet (parameter → module → Zoho API name → Supabase destination) which becomes migration `003_zoho_mapping.sql` (additive only; never drop columns mid-build) + mapping lines in `lib/zoho.ts`.
+- **Already queued for migration 003 [found 2026-07-08]:** `alter table accounts alter column crm_record_id drop not null;` — draft accounts (not-found flow, `is_draft = true`) have no Zoho ID at creation; NOT NULL as shipped in 001 would block them. UNIQUE stays (Postgres allows multiple NULLs). Plus the report-derived columns (`ho_location`, `vertical`, `working_status`, `account_unique_number`) and the `deals` child table.
+- **Salesperson matching is by NAME, not email [decided 2026-07-08]:** the ~100 field salespeople are NOT Zoho users — they exist in the CRM only as names in the assigned-salesperson column, so no emails exist to match. Signup collects full name (+ email + password); sync matches CRM assigned-name ↔ users.full_name with normalization (trim/lowercase). Phase 1 upgrade: replace the free-text name field with a dropdown of distinct CRM salesperson names (pick, don't type). Mismatches are fixed by editing the user's name value in the users table. Name collisions (two people, same name): disambiguate by region if ever needed, not speculatively.
+- **No admin UI [decided 2026-07-08]:** the app is salesperson-only. Sync health / cost / user management happen directly in the Supabase dashboard (Table Editor + saved SQL on research_logs / sync_state). The `role` column stays (free, already built): `admin` role = RLS shows all accounts, used by the owner for testing. `app/admin/page.tsx` is deleted from the build scope; §9 Phase 2 "admin page skeleton" and the admin cost-page references are void.
+- **Field semantics from owner's report review [2026-07-08]:** report rows are OPPORTUNITY-level (one company × N projects = N rows — not duplicates). `CITY NAME` = company head-office city → `accounts.city`; `LOCATION` = head-office locality → `accounts.ho_location`; `CITIES` = the PROJECT's city → belongs to the deal. Therefore Opportunities get a `deals` child table (name, stage, project city, amount, modified time, account_id FK) in migration 003. Agent's RERA queries must search per PROJECT city, not just head-office city. `ACCOUNT WORKING STATUS` (Regular/New Project Coming), `BELONGS TO WHICH VERTICAL` (Pvt/Govt/Channels), and `ACCOUNT UNIQUE NUMBER` (verify: opportunity-scoped?) are wanted fields. Account-owner → RLS mapping needs the internal CRM user list WITH EMAILS from the admin (matches Google-login emails; ask on the call).
+- **Reports are spec, never source [decided 2026-07-08]:** the admin's combined saved report is the human-readable specification (its column headers = the mapping sheet) and later a QA parity baseline (CSV export vs synced data after bulk import). We never sync FROM a report: report rows are join results with no stable record identity (an account with 3 deals = 3 rows), webhooks don't fire on reports, and reports can't answer incremental `Modified_Time >` queries. Sync always reads modules directly via per-module COQL streams; the join happens in our DB via the lookup-ID chain. Capture **API names** (not display labels) for every field on the call.
+
 ### 4.4 Bulk import
 
 Day 3–4 of Phase 1: resumable one-time script run from a developer laptop (not Vercel, due to serverless timeout limits). Pages through filtered result set, upserts each record, stores last-completed page in `sync_state`. On crash, re-run resumes from last saved page. 2k records: 3–5 minutes.
@@ -95,7 +168,7 @@ Every external service the system depends on, in setup order. Anything not on th
 | **Supabase** | Postgres + Auth + RLS | supabase.com | Free during build; **Pro before go-live** (daily backups + point-in-time recovery) | ₹0 / ~$25 |
 | **Vercel** | Next.js hosting, webhook endpoint, cron | vercel.com | Free during build; **Pro before go-live** (better cron + timeouts) | ₹0 / ~$20 |
 | **Anthropic API** | Claude + web search | console.anthropic.com | Pay-as-you-go with monthly budget alert | Est. ₹20k–45k at pilot scale (Section 12) |
-| **Google Cloud OAuth** | For Supabase Auth Google sign-in | console.cloud.google.com | Free | ₹0 |
+| ~~Google Cloud OAuth~~ | **Dropped 2026-07-08** — login is Supabase email+password (team has mixed/no work Google accounts). No Google Cloud project needed. | — | — | ₹0 |
 | **Domain (optional)** | Stable HTTPS URL for Zoho webhook | Any registrar | e.g. Namecheap | ~₹1,000/year — Vercel's free `.vercel.app` works otherwise |
 
 ### 5.1 Explicitly not needed in V1
@@ -113,7 +186,7 @@ Every external service the system depends on, in setup order. Anything not on th
 
 Vercel environment variables only. Never in Git. `.env.example` in the repo names every var with a comment; actual values live only in Vercel env + one password manager entry per developer.
 
-Required env vars: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN`, `ZOHO_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`.
+Required env vars: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN`, `ZOHO_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`. (Google OAuth vars dropped with the email+password decision.)
 
 ### 5.3 Application stack — finalized [LOCKED]
 
@@ -121,7 +194,7 @@ Required env vars: `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN`,
 
 | Layer | Technology | Version target |
 |---|---|---|
-| Framework | Next.js (App Router) | 15.x |
+| Framework | Next.js (App Router) | 16.x (16.2 scaffolded 2026-07-08; auth gate lives in `proxy.ts` — Next 16's rename of `middleware.ts`) |
 | Language | TypeScript (strict mode) | 5.x |
 | Runtime | Node.js | 22 LTS (Vercel default) |
 | Styling | Tailwind CSS, mobile-first | 4.x |
@@ -249,7 +322,7 @@ dream100/
 │   ├── 001_tables.sql          # the 6 tables
 │   └── 002_rls_trigger.sql     # RLS policies + findings archive trigger
 ├── app/
-│   ├── login/page.tsx          # Supabase Auth Google sign-in
+│   ├── login/page.tsx          # Supabase Auth email+password sign-in
 │   ├── search/page.tsx         # entry: name/city/stage search
 │   ├── client/[id]/page.tsx    # THE screen: record + timeline + chat
 │   ├── prep/new/page.tsx       # not-found flow, ephemeral, draft option
@@ -269,7 +342,11 @@ dream100/
 │   ├── diff.ts                 # stored vs fresh findings mechanical diff
 │   ├── format.ts               # bullet enforcement, source-link check,
 │   │                           #   drop bullets without sources
-│   └── supabase.ts             # browser + server clients (@supabase/ssr)
+│   └── supabase/               # three clients, three trust levels:
+│       ├── client.ts           #   browser (anon key, RLS applies)
+│       ├── server.ts           #   server-as-user (cookies, RLS applies)
+│       └── admin.ts            #   service role (BYPASSES RLS — webhook/cron only)
+├── proxy.ts                    # auth gate + session refresh (Next 16 middleware)
 ├── scripts/
 │   └── bulk-import.ts          # one-time resumable import, run via npx tsx
 │                               #   from laptop — never on Vercel
@@ -297,7 +374,7 @@ Rule the structure encodes: the app never talks to Zoho or Claude directly. `lib
 
 ### Phase 0 — Foundation (Days 1–3)
 
-Supabase project (Mumbai region), migrations 001–002 applied, Supabase Auth + Google OAuth wired (2 hours with Google Cloud Console — one of the fiddlier steps), roles seeded, Vercel project + domain live, all env vars populated. In parallel: Zoho admin drafts workflow webhook rules pointed at eventual endpoint URL.
+Supabase project (Mumbai region), migrations 001–002 applied, Supabase Auth email+password wired (no Google Cloud step — dropped 2026-07-08), roles seeded, Vercel project + domain live, all env vars populated. Signup is safe-by-design: a new signup gets role `salesperson` with zero assigned accounts, so an uninvited registrant sees nothing until sync matches their email to a Zoho owner. In parallel: Zoho admin drafts workflow webhook rules pointed at eventual endpoint URL.
 
 **Exit metrics**
 - Test salesperson login sees only assigned seed accounts (RLS proof)
@@ -465,7 +542,7 @@ Output feeds real client meetings. Every guardrail below is a shipping requireme
 4. Supabase project created (Mumbai region), password saved
 5. Vercel account exists (GitHub sign-in)
 6. Anthropic API account with payment method, key generated
-7. Google Cloud project for OAuth client (Supabase Auth needs this) — ~30 minutes
+7. ~~Google Cloud project for OAuth client~~ — dropped; email+password auth needs no external setup
 8. Domain reserved (or accept `.vercel.app` for now)
 9. Day-4 field-mapping screen-share booked with Zoho admin
 10. Five pilot salespeople identified and told they're first
