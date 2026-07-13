@@ -23,9 +23,10 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 
 **Remaining for Phase 0:**
 1. Owner: flip OFF Authentication → Sign In / Providers → Email → "Confirm email" toggle (he was on the Emails *templates* page by mistake; workaround used for test user)
-2. Deploy to Vercel: push repo to GitHub → connect Vercel → paste env vars → live HTTPS URL (needed for the Zoho webhook, not blocking the rest of Phase 1)
+2. ✅ Deployed to Vercel [2026-07-13]: repo pushed to `https://github.com/pankaj-ecoste/dream100` (`main`), imported into Vercel under the `ecoste` account, live at `https://dream100-two.vercel.app`. Multi-account SSH setup done for the laptop (owner works across multiple GitHub orgs) — see [[dream100-github-ssh-setup]]. Hit and fixed one deploy bug: `SUPABASE_SERVICE_ROLE_KEY` was mis-pasted into Vercel's env vars, causing `nightly`/`reconcile` to 500 with "Invalid API key" — re-pasted correctly, redeployed, fixed.
 3. Optionally promote owner's user to `admin` role (one UPDATE) for see-all testing
-4. Uncommitted since Day 1 — owner chose to keep building before the first commit; still only one commit (`Initial commit from Create Next App`) in the repo as of Day 2
+4. First real commit landed 2026-07-13 (`Add Zoho CRM sync layer, auth, and Supabase setup`) — everything from Day 1 through Phase 1 completion committed in one shot
+5. **Full production verification done [2026-07-13]**: login page live and rendering (Zoho dropdown populated with real users), signup end-to-end tested via the actual UI (`Mansi Verma` → `ai.support@ecoste.in`, role/RLS home page confirmed correct), and all three Zoho sync routes hit directly against the live URL with curl: webhook (valid secret + real deal → `{"ok":true,"status":"synced"}`, no-auth → 401), nightly (`{"ok":true,"dealsProcessed":11,"dealsSkipped":19,"accountsProcessed":20,"accountsSkipped":13}`), reconcile (`{"ok":true,"deletedIdsSeen":232,"archived":0}`). `ANTHROPIC_API_KEY` intentionally left blank in Vercel — not needed until Phase 3.
 
 ### Phase 1 — Zoho sync: field mapping done, sync code next (Day 2, 2026-07-09)
 **The Day-4 screen-share call never happened** — instead, field mapping was done directly against live Zoho data (Settings API field metadata + real COQL queries + owner's domain knowledge), which turned out faster and more precise than a manual call would have been. Full detail in §4.3.
@@ -54,7 +55,7 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 **Blocked / open:**
 - **`Region`/`Zone` fields are blocked at the API level** — neither COQL nor the plain REST API can read them (confirmed 2026-07-09), almost certainly Zoho field-level security. Owner chose to fix the permission (Setup → Security Control → Field Level Security → Accounts → grant View on Region/Zone to the Self Client's profile) rather than defer. `accounts.region` stays unpopulated by sync until fixed — will need a re-sync pass once fixed.
 - `accounts.lifecycle_stage` (from 001) has no clean Zoho source — `Account_Type` isn't COQL-queryable. Left unpopulated; the real "is this active" signal lives on `Deals.Stage` instead, which is what filters sync scope in the first place.
-- Still need: point an actual Zoho workflow rule at the webhook now that it's tested, and deploy to Vercel (live HTTPS URL for that rule + activates `vercel.json`'s cron schedule for both nightly and reconcile). This is now the ONLY remaining Phase 1 item.
+- Still need: point an actual Zoho workflow rule at the live webhook (`https://dream100-two.vercel.app/api/zoho/webhook?secret=<ZOHO_WEBHOOK_SECRET>`) — Deals + Accounts modules, on create/edit, Instant Action → Webhook. This is now the ONLY remaining Phase 1 item; vercel.json's cron schedule is already live and self-activating (confirmed nightly + reconcile both run correctly in production).
 - **Gotcha for future scripts**: Supabase's JS client caps unpaginated `.select()` at 1000 rows silently — no error, just a truncated result. Bit us once already during verification (falsely looked like only 102 accounts had notes; real number was 801). Always `.range()`-paginate when counting/aggregating over any table that might exceed 1000 rows.
 
 ### Owner's pending homework
@@ -66,7 +67,7 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 ### Key decisions made 2026-07-08 (details in §4.3, §5.3, §6.2)
 No FastAPI (TS-only) · model `claude-sonnet-5` + adaptive thinking + `web_search_20260209` · auth = Supabase email+password (no Google OAuth) · **no admin UI** (Supabase dashboard is the admin panel) · reports = spec never source · per-module COQL sync, join at home · `deals` child table (see Phase 1 status above for what actually landed in 003)
 
-### Next session: Vercel deploy (activates the cron schedule + gives the webhook a live URL for a real Zoho workflow rule) — the last Phase 1 item, then Phase 2 (client search UI) starts
+### Next session: point a real Zoho workflow rule (Deals + Accounts, on create/edit) at the live webhook URL — the last Phase 1 item — then Phase 2 (client search UI) starts
 
 ---
 

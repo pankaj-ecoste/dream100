@@ -34,7 +34,7 @@ function isValidSecret(provided: string | null): boolean {
   return timingSafeEqual(providedBuf, expectedBuf);
 }
 
-export async function POST(request: NextRequest) {
+async function handleWebhook(request: NextRequest) {
   const secret = request.nextUrl.searchParams.get("secret");
   if (!isValidSecret(secret)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -43,7 +43,9 @@ export async function POST(request: NextRequest) {
   // Zoho's workflow webhook config can send the payload as a JSON body
   // or bake module/id into the URL as query params (merge fields) with
   // an empty body — support both so the admin has flexibility setting
-  // up the workflow rule.
+  // up the workflow rule. In practice Zoho's POST webhooks put
+  // parameters in the body in a form we don't control, so the workflow
+  // rule is configured to use GET, which forces everything into the URL.
   let body: unknown = {};
   try {
     body = await request.json();
@@ -77,3 +79,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: message }, { status: 200 });
   }
 }
+
+export const GET = handleWebhook;
+export const POST = handleWebhook;
