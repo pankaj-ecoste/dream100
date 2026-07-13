@@ -35,18 +35,6 @@ function isValidSecret(provided: string | null): boolean {
 }
 
 async function handleWebhook(request: NextRequest) {
-  // TEMPORARY DIAGNOSTIC — capturing exactly what Zoho sends, since its
-  // Module/Custom Parameters haven't been landing in either the URL or
-  // a parseable body under GET or POST. Remove once root-caused.
-  const rawBodyText = await request.text().catch(() => "<unreadable>");
-  console.error("ZOHO_DEBUG_DUMP", {
-    method: request.method,
-    fullUrl: request.nextUrl.toString(),
-    contentType: request.headers.get("content-type"),
-    headers: Object.fromEntries(request.headers.entries()),
-    rawBodyText,
-  });
-
   const secret = request.nextUrl.searchParams.get("secret");
   if (!isValidSecret(secret)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -55,12 +43,10 @@ async function handleWebhook(request: NextRequest) {
   // Zoho's workflow webhook config can send the payload as a JSON body
   // or bake module/id into the URL as query params (merge fields) with
   // an empty body — support both so the admin has flexibility setting
-  // up the workflow rule. In practice Zoho's POST webhooks put
-  // parameters in the body in a form we don't control, so the workflow
-  // rule is configured to use GET, which forces everything into the URL.
+  // up the workflow rule.
   let body: unknown = {};
   try {
-    body = rawBodyText ? JSON.parse(rawBodyText) : {};
+    body = await request.json();
   } catch {
     // empty/non-JSON body — fall back to query params below
   }
