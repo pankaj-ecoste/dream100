@@ -35,6 +35,18 @@ function isValidSecret(provided: string | null): boolean {
 }
 
 async function handleWebhook(request: NextRequest) {
+  // TEMPORARY DIAGNOSTIC — capturing exactly what Zoho sends, since its
+  // Module/Custom Parameters haven't been landing in either the URL or
+  // a parseable body under GET or POST. Remove once root-caused.
+  const rawBodyText = await request.text().catch(() => "<unreadable>");
+  console.error("ZOHO_DEBUG_DUMP", {
+    method: request.method,
+    fullUrl: request.nextUrl.toString(),
+    contentType: request.headers.get("content-type"),
+    headers: Object.fromEntries(request.headers.entries()),
+    rawBodyText,
+  });
+
   const secret = request.nextUrl.searchParams.get("secret");
   if (!isValidSecret(secret)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -48,7 +60,7 @@ async function handleWebhook(request: NextRequest) {
   // rule is configured to use GET, which forces everything into the URL.
   let body: unknown = {};
   try {
-    body = await request.json();
+    body = rawBodyText ? JSON.parse(rawBodyText) : {};
   } catch {
     // empty/non-JSON body — fall back to query params below
   }
