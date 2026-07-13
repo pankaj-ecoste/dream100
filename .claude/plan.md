@@ -55,7 +55,7 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 **Blocked / open:**
 - **`Region`/`Zone` fields are blocked at the API level** — neither COQL nor the plain REST API can read them (confirmed 2026-07-09), almost certainly Zoho field-level security. Owner chose to fix the permission (Setup → Security Control → Field Level Security → Accounts → grant View on Region/Zone to the Self Client's profile) rather than defer. `accounts.region` stays unpopulated by sync until fixed — will need a re-sync pass once fixed.
 - `accounts.lifecycle_stage` (from 001) has no clean Zoho source — `Account_Type` isn't COQL-queryable. Left unpopulated; the real "is this active" signal lives on `Deals.Stage` instead, which is what filters sync scope in the first place.
-- Still need: point an actual Zoho workflow rule at the live webhook (`https://dream100-two.vercel.app/api/zoho/webhook?secret=<ZOHO_WEBHOOK_SECRET>`) — Deals + Accounts modules, on create/edit, Instant Action → Webhook. This is now the ONLY remaining Phase 1 item; vercel.json's cron schedule is already live and self-activating (confirmed nightly + reconcile both run correctly in production).
+- **Real-time webhook trigger DEFERRED [2026-07-13]** — spent most of a session trying to wire a Zoho workflow rule to call the already-tested webhook live. Root cause chain, fully diagnosed (not guessed): Zoho's "Webhook" instant-action type has a Module Parameters/Custom Parameters UI for attaching data, but empirically — confirmed via raw-request logging added temporarily to the route — none of it reaches the request at all (not in the URL, not in the body) under either GET or POST; only text typed literally into the "URL to Notify" field survives. Switched to a Deluge Function instant action instead (full code control, `invokeurl`), which worked exactly once, then stopped firing for subsequent edits with no request even reaching Vercel — a Zoho-side Function reliability issue we didn't get to root-cause. **Decision**: not worth further time. The nightly cron (§ above, confirmed correct in production) already covers the real workflow — CRM operator batch-adds/updates leads after CVR forms come in, not second-by-second edits — so a same-day sync window is genuinely fine. The webhook route (`app/api/zoho/webhook/route.ts`) is fully built, tested, and live at `https://dream100-two.vercel.app/api/zoho/webhook?secret=<ZOHO_WEBHOOK_SECRET>&module=Deals|Accounts&id=<id>` (GET or POST) — only the Zoho-side trigger is unwired. Revisit only if same-day lag ever becomes a real complaint. The two half-configured Zoho workflow rules (`Dream100 Sync on Deal Change`, `Dream100 Sync on Account Change`) were left in place but should be **deactivated** to stop silent Function failures — owner to do this next time in CRM Setup → Automation → Workflow Rules.
 - **Gotcha for future scripts**: Supabase's JS client caps unpaginated `.select()` at 1000 rows silently — no error, just a truncated result. Bit us once already during verification (falsely looked like only 102 accounts had notes; real number was 801). Always `.range()`-paginate when counting/aggregating over any table that might exceed 1000 rows.
 
 ### Owner's pending homework
@@ -63,11 +63,12 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 - ✅ Bulk import — DONE (908 accounts, 1,327 deals, 11,438 interactions)
 - ⬜ Anthropic API key with billing (needed Day 3–4 / Phase 3)
 - ⬜ Fix Zoho field-level security on `Region`/`Zone` (Accounts module) — blocks `accounts.region` / team-leader RLS scoping
+- ⬜ Deactivate the two unused Zoho workflow rules (`Dream100 Sync on Deal Change`, `Dream100 Sync on Account Change`) to stop silent Function failures
 
 ### Key decisions made 2026-07-08 (details in §4.3, §5.3, §6.2)
 No FastAPI (TS-only) · model `claude-sonnet-5` + adaptive thinking + `web_search_20260209` · auth = Supabase email+password (no Google OAuth) · **no admin UI** (Supabase dashboard is the admin panel) · reports = spec never source · per-module COQL sync, join at home · `deals` child table (see Phase 1 status above for what actually landed in 003)
 
-### Next session: point a real Zoho workflow rule (Deals + Accounts, on create/edit) at the live webhook URL — the last Phase 1 item — then Phase 2 (client search UI) starts
+### Phase 1 is now considered CLOSED (real-time webhook trigger deferred per above, not a blocker). Next session: Phase 2 (client search UI) starts
 
 ---
 
