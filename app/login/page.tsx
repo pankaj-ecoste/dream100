@@ -85,7 +85,7 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-dvh items-center justify-center bg-zinc-50 px-4">
       <div className="w-full max-w-sm">
-        <h1 className="mb-1 text-center text-2xl font-bold text-zinc-900">
+        <h1 className="mb-1 text-center text-2xl font-bold text-brand-blue-dark">
           Dream 100
         </h1>
         <p className="mb-8 text-center text-sm text-zinc-500">
@@ -110,7 +110,7 @@ export default function LoginPage() {
                 value={zohoUserId}
                 onChange={(e) => setZohoUserId(e.target.value)}
                 disabled={zohoUsers.length === 0}
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2.5 text-base outline-none focus:border-zinc-900 disabled:opacity-50"
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2.5 text-base outline-none focus:border-brand-blue disabled:opacity-50"
               >
                 <option value="" disabled>
                   {zohoUsersError
@@ -148,7 +148,7 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@company.com"
-              className="w-full rounded-lg border border-zinc-300 px-3 py-2.5 text-base outline-none focus:border-zinc-900"
+              className="w-full rounded-lg border border-zinc-300 px-3 py-2.5 text-base outline-none focus:border-brand-blue"
             />
           </div>
 
@@ -170,7 +170,7 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="w-full rounded-lg border border-zinc-300 px-3 py-2.5 text-base outline-none focus:border-zinc-900"
+              className="w-full rounded-lg border border-zinc-300 px-3 py-2.5 text-base outline-none focus:border-brand-blue"
             />
           </div>
 
@@ -183,7 +183,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-lg bg-zinc-900 py-3 text-base font-semibold text-white disabled:opacity-50"
+            className="w-full rounded-lg bg-brand-green py-3 text-base font-semibold text-white transition-colors hover:bg-brand-green-dark disabled:opacity-50"
           >
             {busy
               ? "Please wait…"
@@ -198,7 +198,7 @@ export default function LoginPage() {
               setMode(mode === "signin" ? "signup" : "signin");
               setError(null);
             }}
-            className="w-full text-center text-sm text-zinc-500 underline-offset-2 hover:underline"
+            className="w-full text-center text-sm text-brand-blue underline-offset-2 hover:underline"
           >
             {mode === "signin"
               ? "First time? Create your account"

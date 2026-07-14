@@ -45,7 +45,7 @@ export default async function DealPage({
 
   return (
     <main className="mx-auto min-h-dvh w-full max-w-md bg-zinc-50 px-4 py-8">
-      <Link href={`/client/${id}`} className="mb-4 inline-block text-sm text-zinc-500">
+      <Link href={`/client/${id}`} className="mb-4 inline-block text-sm font-medium text-brand-blue">
         ← Back to {accountResult.data.name}
       </Link>
 

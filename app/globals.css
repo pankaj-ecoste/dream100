@@ -3,20 +3,26 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* Ecoste brand palette, sampled from ecoste.in — blue for brand/nav/
+     info, green for primary calls to action. Kept light-only below
+     (no dark-mode override): the CEO asked for a white/off-white/
+     light-grey UI regardless of the device's system theme. */
+  --color-brand-blue: #0062ad;
+  --color-brand-blue-dark: #005087;
+  --color-brand-green: #7ac253;
+  --color-brand-green-dark: #5a9a38;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-brand-blue: var(--color-brand-blue);
+  --color-brand-blue-dark: var(--color-brand-blue-dark);
+  --color-brand-green: var(--color-brand-green);
+  --color-brand-green-dark: var(--color-brand-green-dark);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {

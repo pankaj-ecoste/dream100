@@ -12,7 +12,7 @@ export default function SearchBar({ defaultValue }: { defaultValue: string }) {
         defaultValue={defaultValue}
         placeholder="Search by client name or city…"
         autoComplete="off"
-        className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base outline-none focus:border-zinc-900"
+        className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base outline-none focus:border-brand-blue"
       />
     </form>
   );

@@ -43,8 +43,8 @@ export default function ClientRecord({
   return (
     <div className="rounded-2xl bg-white p-6 shadow-sm">
       <div className="mb-4 flex items-start justify-between gap-3">
-        <h1 className="text-xl font-bold text-zinc-900">{account.name}</h1>
-        <span className="shrink-0 whitespace-nowrap rounded-full bg-zinc-100 px-2.5 py-1 text-xs text-zinc-500">
+        <h1 className="text-xl font-bold text-brand-blue-dark">{account.name}</h1>
+        <span className="shrink-0 whitespace-nowrap rounded-full bg-brand-green/10 px-2.5 py-1 text-xs font-medium text-brand-green-dark">
           {formatSyncedAt(account.synced_at)}
         </span>
       </div>
@@ -74,7 +74,7 @@ export default function ClientRecord({
                   <p className="font-medium text-zinc-900">
                     {deal.name ?? "Untitled opportunity"}
                   </p>
-                  <span className="shrink-0 rounded-full bg-zinc-900 px-2 py-0.5 text-xs text-white">
+                  <span className="shrink-0 rounded-full bg-brand-blue px-2 py-0.5 text-xs text-white">
                     {deal.stage ?? "—"}
                   </span>
                 </div>

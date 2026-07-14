@@ -29,10 +29,10 @@ export default function DealDetail({ deal }: { deal: Deal }) {
   return (
     <div className="rounded-2xl bg-white p-6 shadow-sm">
       <div className="mb-4 flex items-start justify-between gap-3">
-        <h1 className="text-xl font-bold text-zinc-900">
+        <h1 className="text-xl font-bold text-brand-blue-dark">
           {deal.name ?? "Untitled opportunity"}
         </h1>
-        <span className="shrink-0 rounded-full bg-zinc-900 px-2.5 py-1 text-xs text-white">
+        <span className="shrink-0 rounded-full bg-brand-blue px-2.5 py-1 text-xs text-white">
           {deal.stage ?? "—"}
         </span>
       </div>

@@ -67,7 +67,7 @@ export default async function Home({
     <main className="mx-auto min-h-dvh w-full max-w-md bg-zinc-50 px-4 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-zinc-900">Dream 100</h1>
+          <h1 className="text-xl font-bold text-brand-blue-dark">Dream 100</h1>
           <p className="text-sm text-zinc-500">{profile?.full_name ?? user!.email}</p>
         </div>
         <form action="/auth/signout" method="post">
@@ -105,7 +105,7 @@ export default async function Home({
           >
             <div className="flex items-start justify-between gap-3">
               <p className="font-semibold text-zinc-900">{account.name}</p>
-              <span className="shrink-0 whitespace-nowrap text-xs text-zinc-400">
+              <span className="shrink-0 whitespace-nowrap rounded-full bg-brand-green/10 px-2 py-0.5 text-xs font-medium text-brand-green-dark">
                 {formatSyncedAt(account.synced_at)}
               </span>
             </div>
