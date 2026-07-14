@@ -579,14 +579,18 @@ function buildNotesByParentIdsQuery(zohoParentIds: string[], limit = 200, offset
 
 /**
  * Syncs Notes for a batch of up to 100 Zoho parent IDs (Account or Deal
- * IDs — Parent_Id doesn't care which). accountIdByZohoRecordId and
- * dealAccountIdByZohoDealId are pre-built lookup maps (crm_record_id ->
- * internal account uuid) so this doesn't hit Supabase per-note.
+ * IDs — Parent_Id doesn't care which). accountIdByZohoRecordId,
+ * dealAccountIdByZohoDealId, and dealIdByZohoDealId are pre-built lookup
+ * maps (crm_record_id -> internal uuid) so this doesn't hit Supabase
+ * per-note. dealIdByZohoDealId additionally stamps deal_id on
+ * Deals-parented notes (migration 005) so the opportunity detail screen
+ * can show a deal's own notes, not just its parent account's.
  */
 async function syncNotesForParentBatch(
   zohoParentIds: string[],
   accountIdByZohoRecordId: Map<string, string>,
-  dealAccountIdByZohoDealId: Map<string, string>
+  dealAccountIdByZohoDealId: Map<string, string>,
+  dealIdByZohoDealId: Map<string, string>
 ): Promise<{ notesProcessed: number; notesSkipped: number }> {
   const supabase = createAdminClient();
   let notesProcessed = 0;
@@ -633,8 +637,14 @@ async function syncNotesForParentBatch(
         continue;
       }
 
+      // Explicitly null (not omitted) for Accounts-parented notes, so a
+      // re-sync correctly clears deal_id if a note's parent ever changes
+      // — the upsert only touches columns present in the object.
+      const dealId = parentModule === "Deals" ? (dealIdByZohoDealId.get(parentZohoId) ?? null) : null;
+
       pendingRows.push({
         account_id: accountId,
+        deal_id: dealId,
         crm_note_id: note.id,
         meeting_date: note.Created_Time,
         kind: "note",
@@ -663,7 +673,7 @@ export async function syncAllNotes(): Promise<{ notesProcessed: number; notesSki
   const supabase = createAdminClient();
 
   const { data: accounts } = await supabase.from("accounts").select("id, crm_record_id");
-  const { data: deals } = await supabase.from("deals").select("crm_record_id, account_id");
+  const { data: deals } = await supabase.from("deals").select("id, crm_record_id, account_id");
 
   const accountIdByZohoRecordId = new Map<string, string>();
   for (const a of accounts ?? []) {
@@ -671,8 +681,10 @@ export async function syncAllNotes(): Promise<{ notesProcessed: number; notesSki
   }
 
   const dealAccountIdByZohoDealId = new Map<string, string>();
+  const dealIdByZohoDealId = new Map<string, string>();
   for (const d of deals ?? []) {
     dealAccountIdByZohoDealId.set(d.crm_record_id, d.account_id);
+    dealIdByZohoDealId.set(d.crm_record_id, d.id);
   }
 
   const allParentIds = [...accountIdByZohoRecordId.keys(), ...dealAccountIdByZohoDealId.keys()];
@@ -683,7 +695,12 @@ export async function syncAllNotes(): Promise<{ notesProcessed: number; notesSki
 
   for (let i = 0; i < allParentIds.length; i += ZOHO_IN_CLAUSE_MAX) {
     const batch = allParentIds.slice(i, i + ZOHO_IN_CLAUSE_MAX);
-    const result = await syncNotesForParentBatch(batch, accountIdByZohoRecordId, dealAccountIdByZohoDealId);
+    const result = await syncNotesForParentBatch(
+      batch,
+      accountIdByZohoRecordId,
+      dealAccountIdByZohoDealId,
+      dealIdByZohoDealId
+    );
     notesProcessed += result.notesProcessed;
     notesSkipped += result.notesSkipped;
     console.log(
