@@ -8,7 +8,7 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 
 ---
 
-## 0. BUILD STATUS (updated 2026-07-09 — Day 2)
+## 0. BUILD STATUS (updated 2026-07-14)
 
 **Timeline: 12–13 days dev→production** (compressed from 30; owner added 2–3 days for learning depth). Build order 0→1→2→3; Phase 4 is a post-launch fast-follow; pilot shrunk to 2–3 days. Owner is being mentored senior→junior on Node (Python background) — explain each step; on production issues always name the responsible file.
 
@@ -68,7 +68,22 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 ### Key decisions made 2026-07-08 (details in §4.3, §5.3, §6.2)
 No FastAPI (TS-only) · model `claude-sonnet-5` + adaptive thinking + `web_search_20260209` · auth = Supabase email+password (no Google OAuth) · **no admin UI** (Supabase dashboard is the admin panel) · reports = spec never source · per-module COQL sync, join at home · `deals` child table (see Phase 1 status above for what actually landed in 003)
 
-### Phase 1 is now considered CLOSED (real-time webhook trigger deferred per above, not a blocker). Next session: Phase 2 (client search UI) starts
+### Phase 1 CLOSED (real-time webhook trigger deferred per above, not a blocker)
+
+### Phase 2 — Search + client screen: CLOSED [2026-07-14]
+Built and live: `app/page.tsx` (root doubles as search screen), `app/client/[id]/page.tsx`, `SearchBar`/`ClientRecord`/`Timeline`, IST-pinned freshness stamps, Ecoste-branded (brand tokens in `globals.css`). Scope addition beyond plan: deal drill-down (`app/client/[id]/deal/[dealId]`, migration `005_interactions_deal_id.sql`, 2,191 deal-attributed notes). Real-phone 4G test passed informally. Two exit items deliberately deferred to the combined Phase 2+3 pilot: 2-salespeople content validation, and flipping OFF Supabase "Confirm email".
+
+### Phase 3 — AI research agent (core): BUILT + locally verified [2026-07-14]
+All four milestones done and verified end-to-end against the live DB with real Claude runs (scripted checks incl. RLS refusals, not just eyeballing):
+- **Crux** (`stage:"crux"`): "From our existing data" summary, streamed, first token ~2.2s (thinking disabled for this stage — adaptive thinking cost ~5s and it's mechanical summarization). Logged to `research_logs` (run_type `research`).
+- **Research** (`stage:"research"`): ONE Claude call with `web_search_20260318` (max_uses **8** — see gotcha below), marker-wrapped sections parsed by `SectionParser` (lib/agent.ts) with split-marker holdback + degrade-to-verify fallbacks; then FINAL_ANALYSIS at `effort:"high"` in the same HTTP request. Verified on 3 real accounts (dealer/builder/ambiguous): honest empties occur naturally, identity check returned `verify` for the ambiguous "LSK", RERA section found a real project (Aapulki Ravindra Enclave), runs 44–58s, $0.13–0.26/run.
+- **Q&A** (`stage:"qa"`): tool loop (≤4 iterations) over `get_account`/`get_interactions`/`get_saved_findings` served from the RLS-loaded ClientContext (cross-account leakage structurally impossible) + web_search fallback (max_uses 3). Verified: DB-first behavior, answer cited the actual newest note, ~$0.02/question.
+- **Save** (`POST /api/findings/save`): human-tap route (deliberately NOT a Claude tool — §6.3 step 9 consent), RLS-gated read then admin upsert; archive trigger verified to add exactly one `findings_history` row per re-save.
+- **§13 guardrails live**: `enforceSourceLinks` (lib/format.ts) drops unsourced bullets server-side at section finalize (verified dropping real model drift); UI renders only `<strong>`/`<a>` via `InlineText` (no innerHTML); prompt-injection guard clauses in prompts; every run (incl. failures) logged with tokens/cost.
+- **Files**: `lib/prompts.ts`, `lib/agent.ts` (only file touching Anthropic API), `lib/sse-client.ts`, `app/api/chat/route.ts` (maxDuration 300, hand-rolled SSE — no `@ai-sdk/*` installed, decision recorded in the Phase 3 plan), `app/api/findings/save/route.ts`, `components/Chat.tsx` (first client component) + `AgentText`/`InlineText`/`FindingsSection`/`FeedbackButtons`/`SaveDialog`.
+- **Deviation from §6.2**: `web_search_20260318` (newer than the planned `_20260209`); no `save_findings` tool. **Gotcha discovered**: BOTH web_search versions run inside a code-execution sandbox on sonnet-5 — the model burns whole round-trips learning the sandbox API unless the prompt teaches it (`await web_search(...)` returns a JSON string) and tells it to batch queries; that plus max_uses 12→8 took a hard account from 226s to 50s.
+- **Deferred out of Phase 3 (owner decision 2026-07-14)**: not-found flow + draft accounts (`app/prep/new`, `app/api/accounts/draft`).
+- **Remaining for Phase 3 exit**: production deploy (needs `ANTHROPIC_API_KEY` set in Vercel env — deliberately blank since Phase 0 — and a Fluid Compute / 60s-cap check on the Hobby plan), production re-verification, then the combined Phase 2+3 pilot with 2 real salespeople.
 
 ---
 

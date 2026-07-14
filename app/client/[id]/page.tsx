@@ -13,6 +13,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import ClientRecord from "@/components/ClientRecord";
 import Timeline from "@/components/Timeline";
+import Chat from "@/components/Chat";
 
 const INTERACTIONS_LIMIT = 30;
 
@@ -24,7 +25,8 @@ export default async function ClientPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const [accountResult, dealsResult, interactionsResult] = await Promise.all([
+  const [accountResult, dealsResult, interactionsResult, findingsResult] =
+    await Promise.all([
     supabase
       .from("accounts")
       .select(
@@ -42,6 +44,13 @@ export default async function ClientPage({
       .eq("account_id", id)
       .order("meeting_date", { ascending: false, nullsFirst: false })
       .limit(INTERACTIONS_LIMIT),
+    // Saved research (if any) — only the timestamp is needed here; the
+    // agent re-reads the full findings server-side per run.
+    supabase
+      .from("client_findings")
+      .select("updated_at")
+      .eq("account_id", id)
+      .maybeSingle(),
   ]);
 
   // A malformed :id (not a UUID) or an RLS-hidden/missing account both
@@ -61,6 +70,7 @@ export default async function ClientPage({
         account={accountResult.data}
         deals={dealsResult.data ?? []}
       />
+      <Chat accountId={id} savedAt={findingsResult.data?.updated_at ?? null} />
       <Timeline interactions={interactionsResult.data ?? []} />
     </main>
   );
