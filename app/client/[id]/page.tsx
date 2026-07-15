@@ -44,11 +44,15 @@ export default async function ClientPage({
       .eq("account_id", id)
       .order("meeting_date", { ascending: false, nullsFirst: false })
       .limit(INTERACTIONS_LIMIT),
-    // Saved research (if any) — only the timestamp is needed here; the
-    // agent re-reads the full findings server-side per run.
+    // Saved research (if any). Phase 4: the full picture is fetched here
+    // and handed to Chat so a repeat visit renders the stored sections +
+    // analysis INSTANTLY, before any AI call (§9 Phase 4 "<2s stored
+    // picture"). On a fresh re-run the agent re-reads it server-side too.
     supabase
       .from("client_findings")
-      .select("updated_at")
+      .select(
+        "linkedin_findings, rera_findings, website_findings, news_findings, final_analysis, updated_at"
+      )
       .eq("account_id", id)
       .maybeSingle(),
   ]);
@@ -70,7 +74,7 @@ export default async function ClientPage({
         account={accountResult.data}
         deals={dealsResult.data ?? []}
       />
-      <Chat accountId={id} savedAt={findingsResult.data?.updated_at ?? null} />
+      <Chat accountId={id} saved={findingsResult.data ?? null} />
       <Timeline interactions={interactionsResult.data ?? []} />
     </main>
   );

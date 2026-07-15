@@ -8,7 +8,7 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 
 ---
 
-## 0. BUILD STATUS (updated 2026-07-14)
+## 0. BUILD STATUS (updated 2026-07-15)
 
 **Timeline: 12–13 days dev→production** (compressed from 30; owner added 2–3 days for learning depth). Build order 0→1→2→3; Phase 4 is a post-launch fast-follow; pilot shrunk to 2–3 days. Owner is being mentored senior→junior on Node (Python background) — explain each step; on production issues always name the responsible file.
 
@@ -84,6 +84,16 @@ All four milestones done and verified end-to-end against the live DB with real C
 - **Deviation from §6.2**: `web_search_20260318` (newer than the planned `_20260209`); no `save_findings` tool. **Gotcha discovered**: BOTH web_search versions run inside a code-execution sandbox on sonnet-5 — the model burns whole round-trips learning the sandbox API unless the prompt teaches it (`await web_search(...)` returns a JSON string) and tells it to batch queries; that plus max_uses 12→8 took a hard account from 226s to 50s.
 - **Deferred out of Phase 3 (owner decision 2026-07-14)**: not-found flow + draft accounts (`app/prep/new`, `app/api/accounts/draft`).
 - **Next**: combined Phase 2+3 pilot with 2 real salespeople (flip OFF Supabase "Confirm email" toggle before signups). Phase 4 (repeat-visit comparison) not started.
+
+### Combined Phase 2+3 pilot — DONE, clean [2026-07-15]
+Owner confirmed the 2-salesperson pilot happened with no notable issues (no bugs, no section-quality complaints) — the confidence gate is cleared. This unblocked Phase 4.
+
+### Phase 4 — Repeat visit + comparison: BUILT, dev-verified [2026-07-15]
+Approved plan: `C:\Users\panka\.claude\plans\scalable-twirling-scott.md`. On a repeat visit the last saved picture renders instantly (no AI call) and, after a consent-gated re-run, the agent narrates what's changed since the saved visit.
+- **Diff is mechanical, by SOURCE URL, in `lib/diff.ts` (new)** — a fresh bullet is a "change" only if its normalised URL was absent from the saved picture; a disappeared URL is never reported as a removal (that's search variability). The `COMPARISON` prompt is fed ONLY the code-computed new findings, so it can suppress a candidate but has nothing from which to invent one. **The hard gate ("zero hallucinated changes across unchanged repeats") is a code guarantee**: when the fresh URL set matches the saved one, `runComparison` short-circuits to a fixed "Nothing materially new" line and never calls Claude.
+- **Files**: `lib/diff.ts` (new); `COMPARISON_SYSTEM`/`buildComparisonUser` + `PROMPT_VERSION`→`p4.0` in `lib/prompts.ts`; `runComparison` + `comparison` phase/delta events wired into `runResearch` (comparison cost folds into the research run's usage — no route change, no extra `research_logs` row) in `lib/agent.ts`; `components/DiffView.tsx` (new, "use client") renders the instant saved picture + streamed "what's changed"; `components/Chat.tsx` gets a `saved` prop, a `comparison` phase/state, and the re-run consent label; `app/client/[id]/page.tsx` now selects the full saved findings and passes them to `Chat`. **No migration** — `client_findings`/`findings_history`/the archive trigger and `run_type:'comparison'` already existed.
+- **Verified on dev (scripted, session-minting technique, then temp scripts deleted)**: diff.ts logic 21/21 (URL normalisation, new-vs-known, unchanged→no-change, disappearance≠change); live E2E integration 4/4 (first visit → no comparison; repeat → comparison fires with sourced, grounded narration); **hard gate 3/3 live** on BALAJI PLY HOME (baseline saved, re-run → stable website URLs matched → Claude never called → "Nothing materially new"); stored-picture render 5/5 (server HTML carries the saved analysis, warm dev render 1.59s < 2s); save/archive 6/6 via the real `/api/findings/save` route (re-save leaves one `client_findings` row + exactly one `findings_history` row). `npx next build` clean.
+- **Not yet done**: production verification (needs deploy first — prod still runs Phase 3 code until this is pushed); owner's own phone/real-device check.
 
 ---
 

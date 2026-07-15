@@ -23,6 +23,7 @@ import AgentText from "./AgentText";
 import FindingsSection from "./FindingsSection";
 import FeedbackButtons from "./FeedbackButtons";
 import SaveDialog from "./SaveDialog";
+import DiffView, { type SavedPicture } from "./DiffView";
 
 type RetryStage = "crux" | "research";
 
@@ -46,13 +47,17 @@ const QA_TRANSCRIPT_LIMIT = 24;
 
 type ChatState = {
   // consent = crux done, waiting for the human go-ahead before web
-  // research spends money; ready = research finished, Q&A open.
-  phase: "crux" | "consent" | "research" | "analysis" | "ready";
+  // research spends money; comparison = fresh research done, narrating
+  // what changed vs the saved picture (Phase 4); ready = all done, Q&A open.
+  phase: "crux" | "consent" | "research" | "analysis" | "comparison" | "ready";
   busy: boolean;
   crux: string;
   identity: { verdict: "match" | "verify"; note: string } | null;
   sections: Record<SectionKey, SectionData | null>;
   analysis: string;
+  // Repeat-visit "what's changed" narration (Phase 4), streamed after the
+  // fresh analysis. Empty on first visits.
+  comparison: string;
   searches: string[];
   researchRunId: string | null;
   error: { message: string; retryStage: RetryStage } | null;
@@ -85,6 +90,7 @@ const initialState: ChatState = {
   identity: null,
   sections: emptySections,
   analysis: "",
+  comparison: "",
   searches: [],
   researchRunId: null,
   error: null,
@@ -103,6 +109,7 @@ function reducer(state: ChatState, action: ChatAction): ChatState {
         identity: null,
         sections: emptySections,
         analysis: "",
+        comparison: "",
         searches: [],
         researchRunId: null,
         error: null,
@@ -148,6 +155,8 @@ function mainEvent(state: ChatState, e: AgentEvent): ChatState {
       if (e.target === "crux") return { ...state, crux: state.crux + e.text };
       if (e.target === "analysis")
         return { ...state, analysis: state.analysis + e.text };
+      if (e.target === "comparison")
+        return { ...state, comparison: state.comparison + e.text };
       if (e.target === "section") {
         const prev = state.sections[e.section];
         return {
@@ -180,7 +189,9 @@ function mainEvent(state: ChatState, e: AgentEvent): ChatState {
       return { ...state, identity: { verdict: e.verdict, note: e.note } };
 
     case "phase":
-      return e.phase === "analysis" ? { ...state, phase: "analysis" } : state;
+      if (e.phase === "analysis") return { ...state, phase: "analysis" };
+      if (e.phase === "comparison") return { ...state, phase: "comparison" };
+      return state;
 
     case "done":
       if (state.phase === "crux") {
@@ -241,12 +252,15 @@ function qaEvent(state: ChatState, e: AgentEvent): ChatState {
 
 export default function Chat({
   accountId,
-  savedAt,
+  saved,
 }: {
   accountId: string;
-  savedAt: string | null;
+  saved: SavedPicture | null;
 }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  // The timestamp of the saved picture, used for the prep badge and the
+  // save dialog's "replaces the picture from …" copy.
+  const savedAt = saved?.updated_at ?? null;
   const [question, setQuestion] = useState("");
   // One in-flight request at a time; firing a stage cancels the previous
   // stream (and with it the server's Anthropic call — request.signal is
@@ -333,7 +347,10 @@ export default function Chat({
   }, [accountId]);
 
   const researching =
-    state.busy && (state.phase === "research" || state.phase === "analysis");
+    state.busy &&
+    (state.phase === "research" ||
+      state.phase === "analysis" ||
+      state.phase === "comparison");
   const latestSearch = state.searches[state.searches.length - 1];
 
   return (
@@ -382,7 +399,7 @@ export default function Chat({
             onClick={() => fireStage("research")}
             className="mt-4 w-full rounded-lg bg-brand-green py-3 text-base font-semibold text-white transition-colors hover:bg-brand-green-dark"
           >
-            Research this client on the web
+            {saved ? "Re-run research — see what's changed" : "Research this client on the web"}
           </button>
         )}
 
@@ -390,11 +407,13 @@ export default function Chat({
           <div className="mt-4 flex items-center justify-between gap-3">
             <p className="min-w-0 flex-1 truncate text-xs text-zinc-500">
               <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-brand-green align-middle" />
-              {state.phase === "analysis"
-                ? "Thinking about how to approach this meeting…"
-                : latestSearch
-                  ? `Searching: ${latestSearch}`
-                  : "Starting web research…"}
+              {state.phase === "comparison"
+                ? "Comparing with your last saved research…"
+                : state.phase === "analysis"
+                  ? "Thinking about how to approach this meeting…"
+                  : latestSearch
+                    ? `Searching: ${latestSearch}`
+                    : "Starting web research…"}
             </p>
             <button
               type="button"
@@ -414,6 +433,17 @@ export default function Chat({
           </div>
         )}
       </section>
+
+      {/* ── Repeat visit (Phase 4): the saved picture renders instantly,
+             and the "what's changed" narration streams in after a re-run.
+             Absent on first visits (saved === null). ── */}
+      {saved && (
+        <DiffView
+          saved={saved}
+          comparison={state.comparison}
+          comparisonStreaming={state.phase === "comparison" && state.busy}
+        />
+      )}
 
       {/* ── Identity warning: wrong-company research is the most
              damaging failure mode (§13) ── */}

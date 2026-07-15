@@ -23,11 +23,14 @@ import {
   buildResearchUser,
   ANALYSIS_SYSTEM,
   buildAnalysisUser,
+  COMPARISON_SYSTEM,
+  buildComparisonUser,
   QA_SYSTEM,
   buildQaContext,
   type ClientContext,
 } from "./prompts";
 import { enforceSourceLinks } from "./format";
+import { diffFindings, type FindingsDiff } from "./diff";
 
 export const MODEL = "claude-sonnet-5";
 
@@ -49,8 +52,8 @@ const PRICING = {
 export type SectionKey = "linkedin" | "rera" | "website" | "news";
 
 export type AgentEvent =
-  | { type: "phase"; phase: "crux" | "research" | "analysis" | "qa" }
-  | { type: "delta"; target: "crux" | "analysis" | "answer"; text: string }
+  | { type: "phase"; phase: "crux" | "research" | "analysis" | "qa" | "comparison" }
+  | { type: "delta"; target: "crux" | "analysis" | "answer" | "comparison"; text: string }
   | { type: "delta"; target: "section"; section: SectionKey; text: string }
   | { type: "search"; query: string }
   | { type: "tool"; name: string }
@@ -490,7 +493,90 @@ export async function runResearch(opts: {
   }
   usage = addUsage(usage, usageFromMessage(await analysisStream.finalMessage()));
 
+  // ── Call 3 (repeat visits only): comparison ──
+  // If this client has a previously-saved picture, diff the fresh
+  // sections against it IN CODE and narrate what's new (plan.md §9 Phase
+  // 4). First visits (no savedFindings) skip this entirely — identical to
+  // the Phase 3 flow. Comparison cost folds into this research run's usage
+  // (the route logs the whole stage as run_type 'research').
+  if (ctx.savedFindings) {
+    const diff = diffFindings(ctx.savedFindings, sections);
+    usage = addUsage(
+      usage,
+      await runComparison({
+        diff,
+        savedDateISO: ctx.savedFindings.updated_at,
+        send,
+        signal,
+      })
+    );
+  }
+
   return { sections, analysis, usage };
+}
+
+// ── Comparison run: narrate what changed since the last saved visit ────
+// The mechanical diff (lib/diff.ts) has already decided what's new; this
+// only NARRATES it. Two safety properties live here, not in the prompt:
+//   1. empty diff → NO Claude call at all, just a fixed "no changes" line.
+//      This is what makes the §9 Phase 4 hard gate ("zero hallucinated
+//      changes across 10 unchanged repeats") a code guarantee: no new
+//      source URLs means the model is never even consulted.
+//   2. non-empty diff → the prompt is fed ONLY the new findings, so it can
+//      drop one as immaterial but has nothing from which to invent one.
+export async function runComparison(opts: {
+  diff: FindingsDiff;
+  savedDateISO: string;
+  send: SendFn;
+  signal: AbortSignal;
+}): Promise<RunUsage> {
+  const { diff, savedDateISO, send, signal } = opts;
+  send({ type: "phase", phase: "comparison" });
+
+  if (!diff.hasChanges) {
+    send({
+      type: "delta",
+      target: "comparison",
+      text: `**What's changed since last visit**\nNothing materially new since your last saved research (${savedDateISO.slice(
+        0,
+        10
+      )}).`,
+    });
+    return zeroUsage();
+  }
+
+  const stream = getAnthropic().messages.stream(
+    {
+      model: MODEL,
+      max_tokens: 4000,
+      thinking: { type: "adaptive" },
+      // Repeat-visit narration is a meeting-critical output (§6.4) — the
+      // same high effort the first-visit analysis gets.
+      output_config: { effort: "high" },
+      system: [
+        {
+          type: "text",
+          text: COMPARISON_SYSTEM,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        { role: "user", content: buildComparisonUser(diff, savedDateISO) },
+      ],
+    },
+    { signal }
+  );
+
+  for await (const event of stream) {
+    if (
+      event.type === "content_block_delta" &&
+      event.delta.type === "text_delta"
+    ) {
+      send({ type: "delta", target: "comparison", text: event.delta.text });
+    }
+  }
+
+  return usageFromMessage(await stream.finalMessage());
 }
 
 // ── Q&A run: database-first tool loop ──────────────────────────────
