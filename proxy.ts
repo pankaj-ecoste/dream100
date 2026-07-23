@@ -43,7 +43,10 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const isPublic = path.startsWith("/login") || path.startsWith("/auth");
+  // /api/account/* runs before a session exists (account setup) — same
+  // reasoning as /login itself.
+  const isPublic =
+    path.startsWith("/login") || path.startsWith("/auth") || path.startsWith("/api/account");
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();

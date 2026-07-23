@@ -2,18 +2,19 @@ import Link from "next/link";
 import { INDUSTRY_GROUPS } from "@/lib/industryGroups";
 
 // No "use client" — a plain <form method="GET"> works without any
-// JavaScript. Submitting navigates to `/?q=...&industry=...&stage=...`;
+// JavaScript. Submitting navigates to `/?industry=...&stage=...`;
 // Next.js re-renders app/page.tsx on the server with the new
-// searchParams. Fastest possible search on a slow phone connection: no
-// client bundle, no fetch waterfall, just one navigation.
+// searchParams. Fastest possible filtering on a slow phone connection:
+// no client bundle, no fetch waterfall, just one navigation.
+//
+// No free-text search box (owner decision, 2026-07-23 — filters only,
+// dropped the name/city search field that used to live here).
 export default function SearchBar({
-  defaultValue,
   stageOptions,
   selectedIndustry,
   selectedStage,
   selectedTag,
 }: {
-  defaultValue: string;
   stageOptions: readonly string[];
   selectedIndustry: string;
   selectedStage: string;
@@ -25,15 +26,6 @@ export default function SearchBar({
   return (
     <div className="mb-6 space-y-3">
       <form method="GET" action="/" className="space-y-2">
-        <input
-          type="search"
-          name="q"
-          defaultValue={defaultValue}
-          placeholder="Search by client name or city…"
-          autoComplete="off"
-          className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base outline-none focus:border-brand-blue"
-        />
-
         <div className="flex gap-2">
           <select
             name="industry"

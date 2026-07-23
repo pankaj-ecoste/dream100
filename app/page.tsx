@@ -42,25 +42,12 @@ function resolveTagFilter(tagParam: string): { tag: string; stages: string[] } |
   return null;
 }
 
-// PostgREST's .or() filter string uses `,` `(` `)` as syntax — strip them
-// from user input so a stray character in a search box can never break
-// the query. `%` and `_` are SQL ILIKE wildcards; escaping them keeps
-// search literal (typing "50%" searches for the text "50%", not a
-// wildcard match).
-function sanitizeSearchTerm(raw: string): string {
-  return raw
-    .replace(/[,()]/g, "")
-    .replace(/[%_]/g, (char) => `\\${char}`)
-    .trim();
-}
-
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; industry?: string; stage?: string; tag?: string }>;
+  searchParams: Promise<{ industry?: string; stage?: string; tag?: string }>;
 }) {
-  const { q, industry, stage, tag } = await searchParams;
-  const query = q?.trim() ?? "";
+  const { industry, stage, tag } = await searchParams;
   const industryFilter = industry?.trim() ?? "";
   const stageFilter = stage?.trim() ?? "";
   const tagFilter = tag?.trim() ?? "";
@@ -99,6 +86,8 @@ export default async function Home({
   const adHocStageValues = stageFilter ? resolveStageValues(stageFilter) : null;
   const stageValues = resolvedTagFilter ? resolvedTagFilter.stages : adHocStageValues;
 
+  const group = industryGroup(industryFilter);
+
   // Supabase's query builder parses .select()'s argument as a string
   // literal type for row-shape inference, so the two shapes need two
   // literal calls rather than one call fed a runtime-computed string.
@@ -110,39 +99,72 @@ export default async function Home({
     .order("synced_at", { ascending: false, nullsFirst: false })
     .limit(RESULT_LIMIT);
 
+  let accountsCountQuery = (
+    stageValues
+      ? supabase.from("accounts").select("id, deals!inner(id)", { count: "exact", head: true })
+      : supabase.from("accounts").select("id", { count: "exact", head: true })
+  );
+
   // V2 Phase 0: GHB (Customer)/(Prospect) presets — real tag match via
   // the GIN-indexed dream100_tags array (migration 007) COMBINED with
   // the stage condition above, not tag alone (see resolveTagFilter).
   if (resolvedTagFilter) {
     accountsQuery = accountsQuery.contains("dream100_tags", [resolvedTagFilter.tag]);
-  }
-
-  if (query) {
-    const term = sanitizeSearchTerm(query);
-    accountsQuery = accountsQuery.or(`name.ilike.%${term}%,city.ilike.%${term}%`);
+    accountsCountQuery = accountsCountQuery.contains("dream100_tags", [resolvedTagFilter.tag]);
   }
 
   // V2 Phase 0: Industry filter — company-wide, no owner/salesperson
   // scoping (migration 006). "Institutional / Other" also matches a
   // null accounts.industry, so it needs an .or() rather than a plain
   // .in(); every other group is a plain IN list.
-  const group = industryGroup(industryFilter);
   if (group) {
     if (group.includeNull) {
       const csv = group.rawValues.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
       accountsQuery = accountsQuery.or(`industry.in.(${csv}),industry.is.null`);
+      accountsCountQuery = accountsCountQuery.or(`industry.in.(${csv}),industry.is.null`);
     } else {
       accountsQuery = accountsQuery.in("industry", group.rawValues);
+      accountsCountQuery = accountsCountQuery.in("industry", group.rawValues);
     }
   }
 
   if (stageValues) {
     accountsQuery = accountsQuery.in("deals.stage", stageValues);
+    accountsCountQuery = accountsCountQuery.in("deals.stage", stageValues);
   }
 
-  const { data: accounts, error } = await accountsQuery;
+  // Deal count for the SAME filter combination — anchored on the deals
+  // table (not accounts) so it counts every matching deal across all
+  // matching accounts, not just the accounts rendered on this page
+  // (RESULT_LIMIT caps the list to 50, but the count must reflect the
+  // true total, e.g. GHB Prospect = 837 deals even though only 50
+  // accounts are shown).
+  let dealsCountQuery = supabase.from("deals").select("id, accounts!inner(id)", { count: "exact", head: true });
+  if (resolvedTagFilter) {
+    dealsCountQuery = dealsCountQuery.contains("accounts.dream100_tags", [resolvedTagFilter.tag]);
+  }
+  if (group) {
+    if (group.includeNull) {
+      const csv = group.rawValues.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
+      // referencedTable, not a manually-prefixed "accounts.industry"
+      // string — confirmed live that the manual-prefix version silently
+      // fails on an embedded-table .or() (empty error message, count null).
+      dealsCountQuery = dealsCountQuery.or(`industry.in.(${csv}),industry.is.null`, { referencedTable: "accounts" });
+    } else {
+      dealsCountQuery = dealsCountQuery.in("accounts.industry", group.rawValues);
+    }
+  }
+  if (stageValues) {
+    dealsCountQuery = dealsCountQuery.in("stage", stageValues);
+  }
 
-  const hasActiveFilter = Boolean(query || industryFilter || stageFilter || tagFilter);
+  const [{ data: accounts, error }, { count: accountCount }, { count: dealCount }] = await Promise.all([
+    accountsQuery,
+    accountsCountQuery,
+    dealsCountQuery,
+  ]);
+
+  const hasActiveFilter = Boolean(industryFilter || stageFilter || tagFilter);
 
   return (
     <main className="mx-auto min-h-dvh w-full max-w-md bg-zinc-50 px-4 py-8">
@@ -162,7 +184,6 @@ export default async function Home({
       </div>
 
       <SearchBar
-        defaultValue={query}
         stageOptions={ACTIVE_DEAL_STAGES}
         selectedIndustry={industryFilter}
         selectedStage={stageFilter}
@@ -172,6 +193,14 @@ export default async function Home({
       {error && (
         <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
           Could not load clients: {error.message}
+        </p>
+      )}
+
+      {!error && (
+        <p className="mb-3 text-sm text-zinc-500">
+          <span className="font-semibold text-zinc-700">{accountCount ?? 0}</span> accounts ·{" "}
+          <span className="font-semibold text-zinc-700">{dealCount ?? 0}</span> deals
+          {hasActiveFilter ? " matching this filter" : " total"}
         </p>
       )}
 
