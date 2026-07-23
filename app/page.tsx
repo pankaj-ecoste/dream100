@@ -45,12 +45,15 @@ function resolveTagFilter(tagParam: string): { tag: string; stages: string[] } |
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ industry?: string; stage?: string; tag?: string }>;
+  searchParams: Promise<{ industry?: string; stage?: string; tag?: string; page?: string }>;
 }) {
-  const { industry, stage, tag } = await searchParams;
+  const { industry, stage, tag, page } = await searchParams;
   const industryFilter = industry?.trim() ?? "";
   const stageFilter = stage?.trim() ?? "";
   const tagFilter = tag?.trim() ?? "";
+  const pageNum = Math.max(1, parseInt(page ?? "1", 10) || 1);
+  const rangeFrom = (pageNum - 1) * RESULT_LIMIT;
+  const rangeTo = rangeFrom + RESULT_LIMIT - 1;
 
   const supabase = await createClient();
 
@@ -97,7 +100,7 @@ export default async function Home({
       : supabase.from("accounts").select("id, name, city, industry, synced_at")
   )
     .order("synced_at", { ascending: false, nullsFirst: false })
-    .limit(RESULT_LIMIT);
+    .range(rangeFrom, rangeTo);
 
   let accountsCountQuery = (
     stageValues
@@ -165,6 +168,19 @@ export default async function Home({
   ]);
 
   const hasActiveFilter = Boolean(industryFilter || stageFilter || tagFilter);
+  const totalPages = Math.max(1, Math.ceil((accountCount ?? 0) / RESULT_LIMIT));
+
+  // Preserves the active filters across Previous/Next — a plain <Link>,
+  // no JS needed, consistent with the rest of this zero-JS page.
+  function pageHref(targetPage: number): string {
+    const params = new URLSearchParams();
+    if (industryFilter) params.set("industry", industryFilter);
+    if (stageFilter) params.set("stage", stageFilter);
+    if (tagFilter) params.set("tag", tagFilter);
+    if (targetPage > 1) params.set("page", String(targetPage));
+    const qs = params.toString();
+    return qs ? `/?${qs}` : "/";
+  }
 
   return (
     <main className="mx-auto min-h-dvh w-full max-w-md bg-zinc-50 px-4 py-8">
@@ -229,6 +245,36 @@ export default async function Home({
           </Link>
         ))}
       </div>
+
+      {!error && totalPages > 1 && (
+        <div className="mt-4 flex items-center justify-between gap-3">
+          {pageNum > 1 ? (
+            <Link
+              href={pageHref(pageNum - 1)}
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700"
+            >
+              ← Previous
+            </Link>
+          ) : (
+            <span />
+          )}
+
+          <span className="text-xs text-zinc-400">
+            Page {pageNum} of {totalPages}
+          </span>
+
+          {pageNum < totalPages ? (
+            <Link
+              href={pageHref(pageNum + 1)}
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-700"
+            >
+              Next →
+            </Link>
+          ) : (
+            <span />
+          )}
+        </div>
+      )}
     </main>
   );
 }
