@@ -57,6 +57,27 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 - `accounts.lifecycle_stage` (from 001) has no clean Zoho source — `Account_Type` isn't COQL-queryable. Left unpopulated; the real "is this active" signal lives on `Deals.Stage` instead, which is what filters sync scope in the first place.
 - **Real-time webhook trigger DEFERRED [2026-07-13]** — spent most of a session trying to wire a Zoho workflow rule to call the already-tested webhook live. Root cause chain, fully diagnosed (not guessed): Zoho's "Webhook" instant-action type has a Module Parameters/Custom Parameters UI for attaching data, but empirically — confirmed via raw-request logging added temporarily to the route — none of it reaches the request at all (not in the URL, not in the body) under either GET or POST; only text typed literally into the "URL to Notify" field survives. Switched to a Deluge Function instant action instead (full code control, `invokeurl`), which worked exactly once, then stopped firing for subsequent edits with no request even reaching Vercel — a Zoho-side Function reliability issue we didn't get to root-cause. **Decision**: not worth further time. The nightly cron (§ above, confirmed correct in production) already covers the real workflow — CRM operator batch-adds/updates leads after CVR forms come in, not second-by-second edits — so a same-day sync window is genuinely fine. The webhook route (`app/api/zoho/webhook/route.ts`) is fully built, tested, and live at `https://dream100-two.vercel.app/api/zoho/webhook?secret=<ZOHO_WEBHOOK_SECRET>&module=Deals|Accounts&id=<id>` (GET or POST) — only the Zoho-side trigger is unwired. Revisit only if same-day lag ever becomes a real complaint. The two half-configured Zoho workflow rules (`Dream100 Sync on Deal Change`, `Dream100 Sync on Account Change`) were left in place but should be **deactivated** to stop silent Function failures — owner to do this next time in CRM Setup → Automation → Workflow Rules.
 - **Gotcha for future scripts**: Supabase's JS client caps unpaginated `.select()` at 1000 rows silently — no error, just a truncated result. Bit us once already during verification (falsely looked like only 102 accounts had notes; real number was 801). Always `.range()`-paginate when counting/aggregating over any table that might exceed 1000 rows.
+- **OPEN, raised by the business owner 2026-07-22: is Zoho `Owner` reliably "the real field salesperson"?** During an account-creation walkthrough, the owner ("sir") flagged that some names showing up as record owners aren't actually field salespeople — his read was that some are just people updating the CRM. This questions a core assumption behind §4.3's salesperson-matching decision: `Owner.id` on Accounts/Deals is what our sync treats as "the assigned salesperson" (`upsertAccount()`/`upsertDeal()` in `lib/zoho.ts`), and it's the entire basis of the RLS security boundary (`assigned_user_id = auth.uid()`, migration 002) — a "salesperson" role sees every account where they're the technical Zoho Owner, no other check. **Checked live (read-only, both Zoho + Supabase) to see if the concern holds up — it does, visibly:**
+
+  | Zoho user (Owner) | Email | Accounts owned (current 980-row scope) |
+  |---|---|---|
+  | Ritu Goyal | `ritugoyal@ecoste.in` | 261 |
+  | Archana Kaur | `sales02@ecoste.in` | 231 |
+  | Mansi Verma | `support17@ecoste.in` | 204 |
+  | Pooja Aggarwal | `sales03@ecoste.in` | 73 |
+  | Kirti Chauhan | `in.sales01@ecoste.in` | 60 |
+  | Rohit Kumar | `in.sales@ecoste.in` | 53 |
+  | Rajni Minhas | `sales18@ecoste.in` | 50 |
+  | Rishi Saini | `sales@ecoste.in` | 37 |
+  | *(unmatched — Zoho user ID not in the active-users list; likely a deactivated/former employee)* | — | 4 |
+  | Shalini Gupta | `sales01@ecoste.in` | 5 |
+  | Ashish Singh | `ashish@ecoste.in` | 1 |
+  | Ankur Hora | `info@ecoste.in` | 1 |
+  | Shashank Soni | `projectmanager@ecoste.in` | **0** |
+
+  Three concrete red flags in this table, not speculation: **(1)** most of these emails are role-based/generic (`sales02@`, `sales03@`, `sales18@`, `in.sales@`, `sales@` — this last one is the *shared* inbox §4.3 already called out by name — plus `info@` and `support17@`), not personal addresses, which is consistent with a CRM-update account rather than one individual's real book. **(2)** the count itself is a signal — 261 and 231 accounts is an implausible number of personal client relationships for one field salesperson to be actively working, and lines up exactly with what the owner described. **(3)** Shashank Soni's own email says `projectmanager@` — that's not a field sales title, and he owns 0 accounts in the current scope, which is at least consistent, but he'd still show up in the app's signup dropdown as a selectable "salesperson" today. **Also notable**: Rishi Saini and Shalini Gupta — two of the only 3 people who've actually signed up into the app so far — log in via `sales@ecoste.in` and `sales01@ecoste.in` respectively, both shared-style inboxes; if more than one real person uses either inbox for different purposes in Zoho, our system has no way to tell them apart, and whoever signs up in the app under that Zoho identity inherits *everything* owned by it.
+
+  **This is a Zoho data-hygiene question, not a bug in our sync code** — `lib/zoho.ts` is faithfully mirroring whatever Zoho's `Owner` field says; if that field doesn't reflect who's actually responsible for a lead, the fix is correcting it at the source, not patching around it in our code. **Needs owner + Zoho-admin resolution before this is trusted further** — in particular before leaning harder on "my accounts" as a concept, which V2 Phase 0's Industry/Stage filters do (§10). Two independent choices once the owner reviews the 12 identities above: **(a)** reassign the real responsible salesperson as `Owner` on the affected Zoho records (correct long-term fix, but a real data-entry effort at this scale), or **(b)** for any identity confirmed as *not* an individual field rep, keep them out of the app's salesperson signup dropdown entirely, or map them to the existing `crm_handler`/`admin` role (already in the schema, §7) instead of `salesperson` — those roles see broader data by design, so it wouldn't misrepresent a shared/admin account as one person's personal RLS-scoped book. Not resolving this speculatively here — it needs the owner's real-world knowledge of who these 12 people actually are.
 
 ### Owner's pending homework
 - ✅ Supabase project + migrations 001+002+003 — DONE
@@ -64,6 +85,7 @@ This document supersedes all prior versions. Decisions marked **[LOCKED]** were 
 - ⬜ Anthropic API key with billing (needed Day 3–4 / Phase 3)
 - ⬜ Fix Zoho field-level security on `Region`/`Zone` (Accounts module) — blocks `accounts.region` / team-leader RLS scoping
 - ⬜ Deactivate the two unused Zoho workflow rules (`Dream100 Sync on Deal Change`, `Dream100 Sync on Account Change`) to stop silent Function failures
+- ⬜ **[2026-07-22]** Review the 12 Zoho `Owner` identities against real-world knowledge of who's an actual field salesperson vs. a shared/admin/ops login (see the "Blocked / open" item above) — decide reassignment vs. role exclusion for each flagged one
 
 ### Key decisions made 2026-07-08 (details in §4.3, §5.3, §6.2)
 No FastAPI (TS-only) · model `claude-sonnet-5` + adaptive thinking + `web_search_20260209` · auth = Supabase email+password (no Google OAuth) · **no admin UI** (Supabase dashboard is the admin panel) · reports = spec never source · per-module COQL sync, join at home · `deals` child table (see Phase 1 status above for what actually landed in 003)
@@ -105,8 +127,19 @@ Approved plan: `C:\Users\panka\.claude\plans\scalable-twirling-scott.md`. On a r
 - **GO-LIVE SWITCH — do before Monday:** **Vercel Hobby → Pro.** Measured research-run durations are 71s avg with a 223s outlier and 4 of 15 runs ≥60s; Hobby hard-kills functions at 60s, so on Hobby some live runs will die mid-stream. `maxDuration=300` in code only takes effect on Pro. Evidence: `research_logs`, query #7. **Also recommended at go-live:** Supabase Free → Pro (daily backups + PITR now that saved findings become real company memory, §5/§15). ~₹3,750/mo combined.
 - **Owner homework at go-live**: deactivate the 2 dead Zoho workflow rules (silent Function failures); flip OFF Supabase "Confirm email" before the wider signups (if still on); Zoho Region/Zone field-level security (unblocks `accounts.region` + team-leader RLS) if any team leaders are in the first cohort.
 - **Note**: `PROMPT_VERSION` (`lib/prompts.ts`) is defined but NOT persisted to `research_logs` (`logRun()`, `lib/agent.ts`, writes model/tokens/cost/duration/error only). Version↔quality correlation is manual until a one-line fix (add `prompt_version` column + pass it in the insert). Not needed unless prompt tuning gets active.
+- **Operational gotcha found 2026-07-22, real during this live rollout**: signing up does **not** retroactively backfill a salesperson's existing Zoho-owned accounts. `assigned_user_id` only gets set on an account when that specific account/deal is next touched by a sync (nightly cron catching a *modified* Zoho record, a webhook fire, or a bulk-import re-run) — not automatically the moment someone signs up. Checked live: the 3 currently signed-up salespeople show 37 / 5 / 1 assigned accounts respectively; Mansi Verma signed up 2026-07-18 (4 days before this check) and shows only 1 — almost certainly far under her real book, since most of her existing records haven't been edited in Zoho since she signed up. To a newly-signed-up salesperson this looks exactly like "the app is broken, I have no clients." **Fix**: re-run the existing `npm run bulk-import` (`scripts/bulk-import.ts`, resumable, idempotent — safe to run again) after each wave of new signups during rollout, so new users get matched against their *full* existing book, not just records that happen to get edited afterward. Add this as a recurring step in the rollout runbook until the ~10–20 field salespeople have all signed up.
 
 **V1 CLOSED. Next work is V2, which is trigger-driven off real pilot feedback — see §10 (roadmap) and §11 (per-feature triggers). Do not build V2 phases speculatively; wait for the pilot signal each one requires.**
+
+### V2 planning — Industry/Stage filters + Order Punched scope locked in [2026-07-22, plan only — no code changed this session]
+
+Owner specified the first V2 features directly (not pilot-triggered), across three rounds of the same conversation. Round 1: an industry-category navigation step after login. Round 2: Order Punched deals should count as in-scope customer data (Phase 0b). **Round 3 (final, revised same day)**: the industry step doesn't need to be a separate forced screen at all — simpler as two optional, combinable filters (Industry, Stage) directly on the existing account list, now that Supabase is on the Pro plan and the extra query headroom is a non-issue. §10's **V2 Phase 0** reflects this final design; the original forced-screen version is kept struck through in place for context rather than deleted, since the doc's own convention is to record decision evolution, not silently rewrite it.
+
+Key finding from checking live data before writing the plan (per [[feedback-investigate-before-asking]]): neither filter needs a schema change. `accounts.industry` already exists and is synced from Zoho's `Nature_of_Account` field (§4.3 Phase 1 status), populated on 964/980 (98%) live accounts; `deals.stage` already exists with its own index. The curated Industry grouping table in §10 still needs the owner's sign-off on a few ambiguous bucket placements (Institutional, Enduser upto G+5, PMC (Private)).
+
+**Phase 0b** (§10): Order Punched deals (currently deliberately excluded per §4.3) are actually the "Dream 100" customer base itself, confirmed industry-wide (not GHB-only) with a backfill required. Live Zoho check found this is a bigger change than it sounds: 4,489 Order Punched deals across 1,037 accounts, 822 of which aren't in Supabase at all yet — this is also what makes the Stage filter's "Order Punched" option meaningful once it ships.
+
+**Phase 0c** (§10): small, independent polish — the login/signup field set (name/email/password) is confirmed correct as-is; the only gap is a real visual loading indicator during the auth network call, replacing today's text-only "Please wait…" state.
 
 ---
 
@@ -486,7 +519,138 @@ Assuming Phase 5 passes: onboard the remaining ~95 users in staggered groups (re
 
 ## 10. Deferred features — V2 roadmap
 
-Deliberately not in V1. Ordered by expected priority based on pilot feedback.
+Deliberately not in V1. Ordered by expected priority based on pilot feedback, **except Phase 0 below, which is owner-directed and goes first.**
+
+### V2 Phase 0 — Industry + Stage filters on the account list (owner-revised 2026-07-22, ~1 day)
+
+**Revised design, same day**: the original plan below (mandatory category-picker screen between login and the list) is replaced with something simpler and more powerful. Owner's revision: salesperson logs in and lands directly on the existing account list, same as today — no forced step. Two **optional, independently-combinable** filter controls sit on that screen: **Industry** (GHB, Govt, etc.) and **Stage** (the deal pipeline stages, including Order Punched once Phase 0b lands). Either filter alone narrows the list; both together intersect (e.g. Industry=GHB **and** Stage=Order Punched shows exactly the GHB accounts that are already customers — the "Dream 100" segment from Phase 0b, produced by combining two filters rather than needing a dedicated view); neither selected shows everything, exactly like today. Rationale given: now that Supabase is on the Pro plan, the extra query headroom for a second filter/join is a non-issue. Tapping into an account still hands off to the unchanged agent flow (crux → research → Q&A → save → comparison).
+
+**The flow (superseded, kept for context)**: ~~Salesperson logs in → picks an industry category (Govt, GHB, etc.) → sees only accounts in that category → taps into an account.~~ Replaced by the filters model above — no separate screen, no forced choice, no cookie/redirect logic.
+
+**Why this needs no schema change**: `accounts.industry` already exists and is already synced from Zoho's `Nature_of_Account` field (confirmed in Phase 1, §0 status, 2026-07-09) — this is literally where "Group Housing Builder" comes from. The `deals` table (migration 003) already has a `stage` column with its own index (`deals_stage_idx`) — the Stage filter needs no new column either. RLS already scopes every accounts query to `assigned_user_id = auth.uid()` (migration 002, §7). Both filters are just more `WHERE`/join conditions layered on top of the RLS-scoped query the list screen already runs — no migration, no Zoho change, no agent change.
+
+**Real data behind this decision** (queried live from Supabase 2026-07-22, 980 live accounts, 3 salespeople signed up so far — rollout started 2026-07-20, so most of the ~10–20 field salespeople haven't signed up yet, which is why 937/980 accounts currently show `assigned_user_id = null`; that's expected early-rollout state, not a bug — §4.3 "safe by design"):
+
+| Raw `Nature_of_Account` value | Live count |
+|---|---|
+| Group Housing Builder | 782 |
+| Private Contractor | 42 |
+| Private Architecture Firm | 40 |
+| Govt. Contractor | 21 |
+| *(null — not set in Zoho)* | 16 |
+| Dealer | 16 |
+| Enduser upto G+5 | 15 |
+| Fabricator | 12 |
+| Institutional | 10 |
+| Builder Above G+5 | 6 |
+| Interior Designer | 5 |
+| UPVC | 4 |
+| PMC (Private) | 2 |
+| Builder upto G+5 | 2 |
+| Façade Design Consultancy Firm | 2 |
+| CNC Job Work | 1 |
+| Govt. Department | 1 |
+| Other | 1 |
+| Door / Frame Manufacturer | 1 |
+| Retailer | 1 |
+
+19 distinct values, 80% concentrated in one ("Group Housing Builder"). Even as an optional dropdown (not a forced choice), a flat 19-item list on a phone is noisy for little benefit — several values have 1–2 accounts. **Still using the curated group set** as the Industry filter's options, mapped in one code constant so it's editable without a migration:
+
+| Curated group | Raw values folded in | Live count |
+|---|---|---|
+| GHB | Group Housing Builder | 782 |
+| Govt | Govt. Contractor, Govt. Department | 22 |
+| Private Builder | Private Contractor, Builder upto G+5, Builder Above G+5 | 50 |
+| Design & Consultancy | Private Architecture Firm, Interior Designer, Façade Design Consultancy Firm | 47 |
+| Trade & Supply | Dealer, Fabricator, UPVC, CNC Job Work, Door / Frame Manufacturer, Retailer | 35 |
+| Institutional / Other | Institutional, Enduser upto G+5, PMC (Private), Other, *(null)* | 44 |
+
+Once Phase 0b backfills the 822 net-new Order Punched accounts, a few more raw values appear (Furniture Manufacturer, Carpenter, Government Architecture Firm, PMC (Govt), NGO — seen in the Phase 0b breakdown below) — these fold into the closest existing group (Trade & Supply, Trade & Supply, Design & Consultancy, Institutional/Other, Institutional/Other respectively) rather than growing the dropdown further.
+
+**Flagged for owner review before build**: the last three groups (Private Builder, Design & Consultancy, Institutional/Other) are my best guess at Ecoste's real business categories, not confirmed domain knowledge — in particular whether "Institutional", "Enduser upto G+5", and "PMC (Private)" belong where I put them. Null-industry accounts land in "Institutional / Other" so they stay reachable rather than becoming invisible. Confirm/adjust this table before Phase 0 is built; it's a one-line edit in code either way (see below), no migration involved.
+
+**Stage filter options**: sourced from the existing `ACTIVE_DEAL_STAGES` export in `lib/zoho.ts` (single source of truth, no duplicate hardcoded list) — `4 Phase`, `Mockup`, `MockUp Approval`, `Value Period Till Stage Arrival`, `Order Confirmed`, plus `Order Punched` once Phase 0b adds it to that array. Semantics: an account matches a stage filter if **any** of its deals are at that stage (an account can have deals at multiple stages over time — e.g. an older Order Punched deal plus a newer active one — and can legitimately match more than one stage filter).
+
+**Decisions locked with the owner (2026-07-22)**: filters are optional and independently combinable (industry alone, stage alone, both, or neither); no forced screen between login and the list; the existing free-text search box keeps working alongside both filters. Persistence across sessions wasn't asked for in this revision — filters reset to "none" on a fresh visit to `/`, same behavior as today's `q` search param, which is the simplest option and consistent with how the page already works. Cheap to add a remembered-filter cookie later if the owner wants it; not building that speculatively.
+
+**Final scope, confirmed with owner (2026-07-22)**: across every industry, the 5 active-prospect stages **plus** Order Punched combined cover **1,799 distinct accounts / 5,906 deals** (queried live from Zoho, not estimated) — this is the true post-Phase-0b scope, superseding the earlier 822-net-new-backfill estimate (which was a snapshot against Supabase's state at that moment; this 1,799 is a fresh direct pull and the number to build against). Breakdown: Order Punched 4,490 deals, 4 Phase 650, Value Period Till Stage Arrival 437, Mockup 168, Order Confirmed 107, MockUp Approval 54.
+
+**Named filter priority, confirmed with owner (2026-07-22)**: on top of the general Industry×Stage combination mechanism above, two **named quick-filter presets** are the actual priority — everything else (the raw ad-hoc combination, and named presets for other industries) is secondary polish, in the owner's own words "cherry on the cake":
+- **GHB (Customer)** = Industry: GHB + Stage: Order Punched
+- **GHB (Prospect)** = Industry: GHB + Stage: any of {4 Phase, Mockup, MockUp Approval, Value Period Till Stage Arrival, Order Confirmed}
+
+These two are just labeled shortcuts over the same underlying Industry/Stage filter mechanism (a "GHB (Customer)" button pre-fills industry=GHB, stage=Order Punched and submits) — no separate query logic, no separate screen. The free-form Industry×Stage dropdowns stay available underneath for any other combination (e.g. Govt + 4 Phase), just without a named button.
+
+**RESOLVED (2026-07-22)**: no per-salesperson row restriction, anywhere. The owner's decision: any authenticated user (logged in with credentials created for them) sees the **full company dataset**, filtered only by Industry/Stage/the named presets — not scoped to "accounts assigned to me." This drops `assigned_user_id = auth.uid()` as an access restriction (migration 002's `accounts_select` policy, §7) — the whole three-way OR (salesperson-own / team-leader-region / admin-all) collapses to one rule: **any authenticated user can select any account.** Role (`salesperson`/`team_leader`/`admin`/`crm_handler`) stops being a visibility gate for `accounts` — every role was already a superset of "own accounts only," so this change is a strict widening, not a conflict with anything already built. `interactions`/`client_findings`/`findings_history` need no separate change — their policies already piggyback on "if you can see the account, you can see its data" (§7), so they automatically follow. `users_select_self` and `research_logs_select`/`_feedback` stay as-is (a user's own profile row and their own run history/feedback remain personal — that's a different concern from account-data visibility, not addressed by this change).
+
+**This actually simplifies the Phase 0 build**, not complicates it — the Stage-filter query no longer needs to intersect with "the signed-in user's own account IDs"; it's just "every account with a deal at that stage," full stop.
+
+**Built and CLOSED [2026-07-23]** (owner confirmed: no salesperson/owner-based filter at all, tackle later if needed; non-GHB bucket placement for Institutional/Enduser upto G+5/PMC (Private) is best-effort, not gated on precision — GHB itself needs no judgment call, `"Group Housing Builder"` maps 1:1):
+
+**Correction mid-build, important**: the GHB (Customer)/(Prospect) presets were first built as a mechanical Industry+Stage proxy (Industry=GHB + Stage=Order Punched/active) — this was **wrong**. Live-checked against the owner's own Zoho report ("ownership accounts", 740 records, column `TAG`), the mechanical version computed numbers nowhere close to reality. The real definition, confirmed with the owner: Zoho already has a hand-curated Prospect/Customer tagging system on **Accounts** (`Tag` field — singular, not the deal-level "Tags"), e.g. `"D- 100 GHB Customers"` / `"D- 100 GHB Prospects"`, alongside a dozen other segment tags (Private Contractor, Institutional, Fabricator, Govt Contractor, Reseller, Dealer, Architects, Interior Designer, Commercial, Door Manufacturers — plus an unrelated "D-100 Lamora" program, easily confused by name). Reading it required adding the `ZohoCRM.settings.tags.READ` OAuth scope to the Self Client (previously missing — confirmed via a live `401 OAUTH_SCOPE_MISMATCH`) and regenerating the refresh token; COQL cannot select `Tag` at all (`SYNTAX_ERROR`), so it's fetched via a separate plain-REST batch call, Accounts module only (Deals carries different, unrelated tags like "Repeat Order"). Final definition, confirmed with the owner: **tag AND stage together, not tag alone** — GHB Customer = `"D- 100 GHB Customers"` tag **and** an Order Punched deal; GHB Prospect = `"D- 100 GHB Prospects"` tag **and** a deal in one of the 5 active stages. Tag alone overcounts (161 accounts carry the Customer tag, but only 142 currently have a live Order Punched deal — the rest have gone Deal Lost, moved stage, etc. since being tagged).
+
+- `supabase/migrations/006_open_account_visibility.sql` — replaces `accounts_select` (migration 002) with `using (auth.uid() is not null)`. **Applied to production.**
+- `supabase/migrations/007_account_dream100_tags.sql` — adds `accounts.dream100_tags text[]` (GIN-indexed) storing ALL of an account's tags as plain names, not just GHB's — adding another segment later is a query-side change only. **Applied to production.**
+- `lib/zoho.ts` — added `fetchAccountTagsByIds`/`attachDream100Tags` (REST batch fetch, wired into all 5 account-sync call sites: `syncActiveDealsPage`, `syncOneAccount`, `syncOneDeal`, `syncModifiedDealsPage`, `syncModifiedAccountsPage`) since COQL can't carry `Tag`. Also: **`"Order Punched"` added to `ACTIVE_DEAL_STAGES`** — this reverses the 2026-07-08 exclusion (see Phase 0b below); needed because the Customer preset requires Order Punched deals to actually be synced.
+- `lib/industryGroups.ts` — `INDUSTRY_GROUPS` (general ad-hoc Industry filter, unchanged) + `GHB_CUSTOMER_TAG`/`GHB_PROSPECT_TAG` (the real tag strings) + `GHB_PROSPECT_STAGES` (a **frozen** copy of the 5 active stages, deliberately independent of `ACTIVE_DEAL_STAGES` — since that array just gained Order Punched, a preset that spread `[...ACTIVE_DEAL_STAGES]` would silently start counting Order Punched deals as "Prospect" too).
+- `components/SearchBar.tsx` — `industry`/`stage` `<select>`s + "Apply filters" button (general ad-hoc filters, unchanged), plus two `<Link>`-based presets now on `?tag=ghb_customer` / `?tag=ghb_prospect` (not `industry=`/`stage=` params), highlighting correctly when active.
+- `app/page.tsx` — general Industry/Stage filters unchanged. GHB presets (`resolveTagFilter`) resolve to `{tag, stages}` together and apply both: `.contains("dream100_tags", [tag])` **and** the same embedded-join stage filter (`deals!inner(id)` + `.in("deals.stage", stages)`) used by the ad-hoc Stage dropdown — confirmed live this embedded-join approach is required at this scale: the naive "fetch matching account ids, then `.in('id', ids)`" breaks with a 400 Bad Request once a stage matches hundreds of accounts (e.g. "4 Phase" alone = 600).
+- **Sync scope backfill**: reset `sync_state` and re-ran `npm run bulk-import` twice (once for the initial tag backfill on already-synced accounts, once more after adding Order Punched to pull in the ~800 net-new accounts/deals) — hit two transient network blips (`ECONNRESET`, `ENOTFOUND`) mid-run, both resolved by simply re-running (resumable by design, upserts idempotent). Final: **1,808 accounts / 5,873 deals synced** (up from 985/~1,400 pre-Phase-0b).
+- `app/login/page.tsx` — unchanged.
+
+**Verified live, exact match, through the real app query path (session-minted test user against the running dev server, not just the DB layer)**:
+- GHB (Customer): **142 accounts / 740 deals** — matches the owner's target exactly (740 also independently reconciles the original Zoho report's "740 total records," which turned out to be counting Order Punched deals, not distinct accounts)
+- GHB (Prospect): **689 accounts / 837 deals** — exact match
+- Both presets render correctly in the browser (curl against a minted session), correct account names, correct active/inactive button highlighting, capped at `RESULT_LIMIT=50` as designed
+- `npx next build` clean throughout
+
+**Exit check — all passed**:
+- ✅ Industry alone / Stage alone / both / neither all return the correct company-wide set
+- ✅ GHB (Prospect) and GHB (Customer) presets return exactly 689/837 and 142/740
+- ✅ Migrations 006 and 007 applied to production; cross-user consistency follows directly from migration 006's single `auth.uid() is not null` policy (no per-user branching left to diverge)
+- ⬜ **Still open**: full agent-flow regression (crux → research → Q&A → save → comparison) on an account reached via a filter — this session only touched the search/list screen and the sync layer, not `lib/agent.ts` or the client page; worth a real pass before considering V2 Phase 0 fully done end-to-end.
+
+### V2 Phase 0b — Order Punched = customer scope + prompt restructuring (owner-directed, immediate) [supersedes a §4.3 [LOCKED] decision]
+
+**What changed**: per the owner (2026-07-22, relaying a decision from a meeting with the business owner referred to as "sir"), an account with a deal at **Order Punched** is not a dead prospect — it's a paying customer, and this segment specifically *is* what "Dream 100" refers to (the product's own name). GHB (Group Housing Builder) is the largest and most strategically important slice of it, but the decision is **industry-wide**, not GHB-only (confirmed with the owner). This directly reverses the 2026-07-08 §4.3/Phase 1 decision that Order Punched is "deliberately excluded, nothing left to prepare for" — that assumption was wrong for this product; Order Punched accounts are exactly what needs preparing for (account growth, repeat orders, relationship maintenance), just with a different research angle than a prospect.
+
+**Real scale, queried live from Zoho 2026-07-22 (read-only COQL, no writes)** — this matters because it's a much bigger change than it sounds:
+- **4,489 deals** currently sit at `Order Punched`, across **1,037 distinct accounts**.
+- Of those 1,037 accounts, **215 already exist in Supabase** (they also had an earlier active-stage deal that got them synced) — only their Order Punched deal row is missing.
+- **822 accounts are completely absent from Supabase today** — pure backfill need. This is larger than the entire current live scope (980 accounts). **Superseded by a cleaner combined number, §10 Phase 0**: a direct live pull across all 6 target stages (5 active + Order Punched) found **1,799 distinct accounts / 5,906 deals** total — that's the authoritative post-Phase-0b scope figure to build against; 822 was a same-day snapshot against Supabase's state at that moment.
+- Industry breakdown of the 1,037 Order Punched accounts (this is the real "who is Dream 100" answer): **Group Housing Builder 229**, Govt. Contractor 180, Enduser upto G+5 175, Dealer 92, Retailer 69, *(null)* 57, Private Contractor 48, Fabricator 39, Other 27, Private Architecture Firm 22, Builder Above G+5 20, Institutional 20, Interior Designer 13, UPVC 11, Builder upto G+5 10, Govt. Department 7, Furniture Manufacturer 6, Carpenter 3, Government Architecture Firm 2, PMC (Govt) 2, PMC (Private) 2, Door/Frame Manufacturer 1, CNC Job Work 1, NGO 1. GHB is the single biggest group (22%) but the customer base is materially broader than GHB alone — worth knowing before assuming Phase 0b is "a GHB feature."
+
+**Sync-scope portion DONE [2026-07-23]**, done as part of Phase 0's GHB-preset work rather than as separate Phase 0b scaffolding (turned out to be the same underlying dependency): `lib/zoho.ts` — `"Order Punched"` added to `ACTIVE_DEAL_STAGES` directly (not a separate scoped script — the existing `syncActiveDealsPage`/`buildActiveDealsQuery` already drives off this one array uniformly across bulk import, webhook, and nightly cron, so no new code path was needed). Backfill done via the existing resumable `scripts/bulk-import.ts` (reset `sync_state` to page 0, re-ran) rather than a separate one-time script — same idempotent upserts, just a fuller pass. Final: 1,808 accounts / 5,873 deals synced (up from 985/~1,400).
+
+**Still not built** (the rest of Phase 0b, unrelated to the sync-scope work above):
+- Notes sync (`scripts/sync-notes.ts`) would need a follow-up pass over the newly-admitted accounts/deals too, same as it did after the original bulk import (§0 Phase 1 status) — otherwise these 822 new accounts show up with CRM data but no interaction history.
+
+**Prompt restructuring** (the "search GHB with Order Confirmed tag and give highly accurate information" part):
+- The agent currently has one framing: "how to approach this meeting" (§6.5 `FINAL_ANALYSIS`), tuned for prospects. An Order Punched account needs a different angle — not "how to win this deal" but account-growth framing: repeat business, expansion/new projects, referrals, service/relationship health, anything that signals risk (competitor activity, complaints) or opportunity (new project announcements) for an existing customer.
+- Proposed approach: `lib/agent.ts`/`lib/prompts.ts` branch the analysis framing on whether the account's deal(s) include an Order Punched stage (a cheap check against data already loaded in `ClientContext` — no new query). Section search queries (§6.4 technique #2, query enrichment) would also shift for these accounts: instead of "prospect" framing, queries lean toward the company's post-purchase footprint — new project registrations, expansions, site launches — which is exactly the kind of forward-looking signal that matters for a customer, not a prospect.
+- This needs real prompt iteration against real Order Punched accounts once they're synced (same "prompts are versioned in Git, iterated against real data" principle as §6.5) — the plan captures the *intent* here; exact wording is a Phase 0b build-time task, not something to lock down speculatively now.
+
+**Deal-specific agent context — concrete gap found 2026-07-22, owner asked for "the agent to answer very particular/specific about that deal or account"**: checked the actual code, and this is real, not vague. `loadClientContext(supabase, accountId)` (`lib/agent.ts`) always loads **every** deal on an account together (`deals` query has no stage/id filter beyond `account_id`) — so an account with, say, one old Order Punched deal and a newer active-stage deal gets analyzed as one blended picture, never anchored to one specific deal. Worse: the deal drill-down page that already exists (`app/client/[id]/deal/[dealId]/page.tsx`, shipped in Phase 2, has its own deal-scoped interactions query via `deal_id`) **never calls the agent at all** — it's a pure CRM-mirror display page; Chat/research is only ever launched from the account-level page (`app/client/[id]/page.tsx`). So today there's no way to ask the agent to research *this one deal* specifically, even though the data model (and a whole page) already exists for it.
+- **Proposed fix** (plan only): extend `loadClientContext` to accept an optional `dealId`; when present, anchor context to that one deal (its `stage`, `cities` for project-city query enrichment, `amount`) plus deal-scoped interactions (already queryable via `interactions.deal_id`, migration 005) — the account-level fields (name, industry, etc.) stay for identity, but the deal becomes the analysis subject, not just background data among several. Add a "Research this deal" entry point on `app/client/[id]/deal/[dealId]/page.tsx` (currently has none) alongside the existing account-level entry point — both remain valid, account-level for a general picture, deal-level for precision on one specific opportunity. This is the same underlying idea as the Order Punched vs. prospect framing above, generalized: the agent should reason about *the specific deal in front of the salesperson*, not always the account's full aggregate history.
+- Ties directly into Phase 0's named filters: reaching an account via **GHB (Customer)** or **GHB (Prospect)** means the salesperson came in via one specific deal (an Order Punched one, or an active-stage one) — the deal-anchored context is what makes the resulting research actually precise to why they clicked in, rather than a generic account summary.
+
+**Exit check**: an Order Punched GHB account (e.g. one of the 229 identified above) syncs correctly with full account + deal + notes data; the agent's crux and research clearly reflect customer framing rather than prospect framing; a spot-check across a few Order Punched accounts in different industries confirms the framing change isn't GHB-hardcoded; opening the agent from a specific deal (once built) produces analysis anchored to that deal, not a blended multi-deal summary.
+
+### V2 Phase 0c — Login loading feedback (owner-directed, same day, small polish)
+
+**Superseded same day (2026-07-22), after Phase 0's RLS decision**: since account visibility is no longer matched to a specific Zoho user (§10 Phase 0's "RESOLVED" note — no per-salesperson scoping at all), the signup form's Zoho-user dropdown no longer serves its original purpose (linking `zoho_user_id` for account-matching, migration 004). Owner's revised flow, confirmed: drop the dropdown, revert "name" to a **plain free-text field** — name, email, password, nothing sourced from Zoho anymore. Attribution is still wanted (the owner explicitly wants a name shown for tracking — who searched, who ran the agent), but that just needs *a* name captured at account-creation time, not a verified link to a specific Zoho record.
+
+**Provisioning model, confirmed**: an account gets created by filling name + email + password directly (the owner described this as "at the time of adding user we just fill name, email, password... and share him email + password") — that's the same 3-field form either way; nothing in the code needs to know or care whether the salesperson fills it themselves or someone else fills it and hands over the credentials. No separate admin-only UI needed for this.
+
+**Already satisfied, no new work**: showing the logged-in user's name for tracking/confirmation is already live — `app/page.tsx` already renders `profile?.full_name ?? user!.email` under the "Dream 100" header on every visit. Every action already lands in Supabase against `auth.uid()` (`research_logs.user_id`, `client_findings.saved_by`) regardless of this change — that tracking was never tied to the Zoho link in the first place.
+
+**Proposed changes** (plan only — not built yet):
+- `app/login/page.tsx` — remove the `zohoUsers`/`zohoUserId` state, the `useEffect` fetch of `/api/zoho/users`, and the `<select>` in signup mode; replace with a plain `<input type="text" name="fullName">`. `signUp()` call sends `{ full_name: fullName }` as metadata only — no `zoho_user_id`.
+- Migration note: no migration needed — `users.zoho_user_id` (migration 004) can simply stop being populated for new signups; existing rows keep whatever they have, harmless either way. Not worth a column-drop migration for this.
+- `app/api/zoho/users/route.ts` — becomes unused by signup once this ships. Not urgent to delete; flagged as a small cleanup candidate, not a build requirement.
+- **Loading bar addition still stands as originally planned**: Supabase Auth calls have no real progress to report, so an **indeterminate loading bar** (thin animated CSS-only bar, no new dependency) shown while the existing `busy` state is `true` is still the right fix — this part of Phase 0c is unaffected by the dropdown removal, just now guarding a simpler 3-field form.
+
+**Exit check**: signup collects name/email/password only, no Zoho dependency at signup time at all; a newly created login immediately shows the full company dataset (per Phase 0's resolved scoping) with the entered name visible in the header; tapping submit on a throttled connection shows a clearly visible loading bar for the full request duration, not just a disabled button.
 
 ### V2 Phase A — Follow-up notifications (2 weeks, immediately after V1)
 
@@ -528,6 +692,9 @@ Every V2 phase has a **pilot-signal trigger** — build only if real usage deman
 
 | V2 phase | Trigger from pilot |
 |---|---|
+| 0 — Industry-first navigation | **None — owner-directed at plan time (2026-07-22).** Not pilot-gated; builds first, ahead of A. |
+| 0b — Order Punched customer scope + prompts | **None — owner-directed at plan time (2026-07-22),** relayed from a decision made with the business owner. Not pilot-gated; builds alongside/after Phase 0. |
+| 0c — Login loading feedback | **None — owner-directed at plan time (2026-07-22).** Small polish, no dependency on 0/0b; can build anytime. |
 | A — Follow-up notifications | Explicit request from ≥3/5 pilots ("I forget which leads to reconnect with") |
 | B — Proactive alerts | Instances of missed opportunities discovered post-hoc (competitor won a project we didn't know had been registered) |
 | C1 — MahaRERA scraper | ≥40% of Maha pilot research sessions rate RERA section 👎 |

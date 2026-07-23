@@ -136,17 +136,26 @@ export const DEAL_FIELDS = [
   "Modified_Time",
 ] as const;
 
-// The ONLY stages that matter for this app. A deal earns "prospect"
-// status at "4 Phase" (lead agreed to a 4-phase presentation) and
-// exits our scope at "Order Punched" (deal won, nothing left to
-// research/prepare for) — so we stop one stage short of that.
-// Confirmed against the owner's live Custom View filter 2026-07-09.
+// The stages that matter for this app. A deal earns "prospect" status
+// at "4 Phase" (lead agreed to a 4-phase presentation).
+//
+// "Order Punched" ADDED [2026-07-23, V2 Phase 0b] — reverses the
+// original 2026-07-09 decision to stop one stage short of it. That
+// decision assumed a won deal has "nothing left to prepare for," but
+// the owner clarified Order Punched accounts ARE the product's "Dream
+// 100" customer base (repeat orders, account growth, relationship
+// maintenance) — see plan.md §10 Phase 0b and the GHB (Customer) preset
+// (lib/industryGroups.ts), which specifically needs these deals synced
+// to compute correctly. This one array drives scope-admission
+// uniformly across bulk import, webhook, and nightly cron — no other
+// code path needed to change for Order Punched deals to start syncing.
 export const ACTIVE_DEAL_STAGES = [
   "4 Phase",
   "Mockup",
   "MockUp Approval",
   "Value Period Till Stage Arrival",
   "Order Confirmed",
+  "Order Punched",
 ] as const;
 
 function coqlStringLiteral(value: string): string {
@@ -229,7 +238,50 @@ type AccountRow = Record<string, unknown> & {
   Account_Working_Status: string | null;
   Belongs_To: string | null;
   Nature_of_Account: string | null;
+  // NOT a COQL field — COQL can't select "Tag" (confirmed: SYNTAX_ERROR).
+  // Populated separately by attachDream100Tags() via a plain REST call,
+  // after the COQL fetch, before upsertAccount().
+  dream100Tags?: string[];
 };
+
+// ── Dream100 account tags (Accounts module only — Deals carries
+// different, unrelated tags) ─────────────────────────────────────
+// COQL cannot select "Tag" at all. The plain REST list/get endpoints
+// can, but only with the ZohoCRM.settings.tags.READ scope granted
+// (confirmed live 2026-07-23: without it, every record silently came
+// back with an empty Tag array, even ones known-tagged in the CRM UI —
+// no error, just empty, which is what made this take so long to find).
+// tag_names= filtering is broken (silently no-ops, confirmed live) —
+// so every synced account's Tag array is fetched and matched client-side.
+const ZOHO_IN_CLAUSE_MAX = 100;
+
+async function fetchAccountTagsByIds(zohoAccountIds: string[]): Promise<Map<string, string[]>> {
+  const tagsByAccountId = new Map<string, string[]>();
+  if (zohoAccountIds.length === 0) return tagsByAccountId;
+
+  const accessToken = await getAccessToken();
+  for (let i = 0; i < zohoAccountIds.length; i += ZOHO_IN_CLAUSE_MAX) {
+    const idBatch = zohoAccountIds.slice(i, i + ZOHO_IN_CLAUSE_MAX);
+    const res = await fetch(
+      `${process.env.ZOHO_API_DOMAIN}/crm/v8/Accounts?ids=${idBatch.join(",")}&fields=id,Tag`,
+      { headers: { Authorization: `Zoho-oauthtoken ${accessToken}` } }
+    );
+    const data = await res.json();
+    for (const row of data.data ?? []) {
+      tagsByAccountId.set(row.id, (row.Tag ?? []).map((t: { name: string }) => t.name));
+    }
+  }
+  return tagsByAccountId;
+}
+
+/** Mutates each account row in place, attaching its real Dream100 tags before upsert. */
+async function attachDream100Tags(accounts: AccountRow[]): Promise<void> {
+  if (accounts.length === 0) return;
+  const tagsByAccountId = await fetchAccountTagsByIds(accounts.map((a) => a.id));
+  for (const account of accounts) {
+    account.dream100Tags = tagsByAccountId.get(account.id) ?? [];
+  }
+}
 
 type DealRow = Record<string, unknown> & {
   id: string;
@@ -273,6 +325,7 @@ export async function upsertAccount(row: AccountRow): Promise<string> {
         working_status: row.Account_Working_Status ?? null,
         vertical: row.Belongs_To ?? null,
         industry: row.Nature_of_Account ?? null,
+        dream100_tags: row.dream100Tags ?? [],
         zoho_owner_id: row.Owner?.id ?? null,
         assigned_user_id: assignedUserId,
         raw: row,
@@ -345,6 +398,8 @@ export async function syncActiveDealsPage(
     accounts.push(...batch);
   }
 
+  await attachDream100Tags(accounts);
+
   const accountIdByZohoId = new Map<string, string>();
   for (const account of accounts) {
     const internalId = await upsertAccount(account);
@@ -397,6 +452,7 @@ export async function syncOneAccount(zohoAccountId: string): Promise<SingleSyncR
     return { status: "skipped", reason: "account not found in Zoho (deleted?)" };
   }
 
+  await attachDream100Tags(rows);
   await upsertAccount(rows[0]);
   return { status: "synced" };
 }
@@ -435,6 +491,7 @@ export async function syncOneDeal(zohoDealId: string): Promise<SingleSyncResult>
     return { status: "skipped", reason: "deal's linked account not found in Zoho (deleted?)" };
   }
 
+  await attachDream100Tags(accountRows);
   const internalAccountId = await upsertAccount(accountRows[0]);
   await upsertDeal(deal, internalAccountId);
   return { status: "synced" };
@@ -485,6 +542,8 @@ export async function syncModifiedDealsPage(
     accounts.push(...batch);
   }
 
+  await attachDream100Tags(accounts);
+
   const accountIdByZohoId = new Map<string, string>();
   for (const account of accounts) {
     const internalId = await upsertAccount(account);
@@ -524,9 +583,11 @@ export async function syncModifiedAccountsPage(
     .in("crm_record_id", accounts.map((a) => a.id));
   const existingIds = new Set((existing ?? []).map((a) => a.crm_record_id));
 
+  const admittedAccounts = accounts.filter((a) => existingIds.has(a.id));
+  await attachDream100Tags(admittedAccounts);
+
   let accountsProcessed = 0;
-  for (const account of accounts) {
-    if (!existingIds.has(account.id)) continue;
+  for (const account of admittedAccounts) {
     await upsertAccount(account);
     accountsProcessed++;
   }
