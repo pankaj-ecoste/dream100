@@ -622,8 +622,9 @@ These two are just labeled shortcuts over the same underlying Industry/Stage fil
 
 **Sync-scope portion DONE [2026-07-23]**, done as part of Phase 0's GHB-preset work rather than as separate Phase 0b scaffolding (turned out to be the same underlying dependency): `lib/zoho.ts` — `"Order Punched"` added to `ACTIVE_DEAL_STAGES` directly (not a separate scoped script — the existing `syncActiveDealsPage`/`buildActiveDealsQuery` already drives off this one array uniformly across bulk import, webhook, and nightly cron, so no new code path was needed). Backfill done via the existing resumable `scripts/bulk-import.ts` (reset `sync_state` to page 0, re-ran) rather than a separate one-time script — same idempotent upserts, just a fuller pass. Final: 1,808 accounts / 5,873 deals synced (up from 985/~1,400).
 
-**Still not built** (the rest of Phase 0b, unrelated to the sync-scope work above):
-- Notes sync (`scripts/sync-notes.ts`) would need a follow-up pass over the newly-admitted accounts/deals too, same as it did after the original bulk import (§0 Phase 1 status) — otherwise these 822 new accounts show up with CRM data but no interaction history.
+**Notes sync follow-up also DONE [2026-07-23]** — `npm run sync-notes` re-run against the expanded scope (this was flagged right above as needed and almost got missed; caught before moving on). Result: 11,312 additional notes synced (12,420 total interaction rows now, up from 11,438), 926/1,808 accounts have at least one interaction — the rest genuinely have none in Zoho, same pattern as the original Phase 1 sync (88% coverage on the original 908-account scope; lower % now since the Order Punched accounts brought in have less note history on average).
+
+**Still not built** (the rest of Phase 0b — prompt restructuring and deal-specific agent context):
 
 **Prompt restructuring** (the "search GHB with Order Confirmed tag and give highly accurate information" part):
 - The agent currently has one framing: "how to approach this meeting" (§6.5 `FINAL_ANALYSIS`), tuned for prospects. An Order Punched account needs a different angle — not "how to win this deal" but account-growth framing: repeat business, expansion/new projects, referrals, service/relationship health, anything that signals risk (competitor activity, complaints) or opportunity (new project announcements) for an existing customer.
